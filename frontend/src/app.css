@@ -1,0 +1,33 @@
+:root {
+  /* KODE15 design tokens (kode15.no) */
+  --color-bg: #f3f1ec;
+  --color-card: #ffffff;
+  --color-text: #141618;
+  --color-accent: #778395;
+  --color-accent-muted: #a98977;
+  --color-beige: #baac99;
+  --color-slate: #525c64;
+  --color-line: #d4d4d4;
+  --color-disabled: #a8a8a8;
+  --color-success: #54d16a;
+  --color-warning: #ea8f01;
+  --color-error: #f14242;
+  --color-heart: #cb333b;
+  --radius: 18px;
+  --font-display: 'Bebas Neue', sans-serif;
+  --font-body: 'Open Sans', sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+

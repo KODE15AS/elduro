@@ -1,0 +1,15 @@
+name: elduro
+
+services:
+  # Elduro web UI + data hub on Tailscale: http://<raven>:8094/
+  # HTTPS (needed for Web Bluetooth) via: tailscale serve --bg --https=8443 http://127.0.0.1:8094
+  web:
+    build: .
+    image: elduro/web:latest
+    user: "1000:1000"
+    ports:
+      - "8094:8080"
+    restart: unless-stopped
+    labels:
+      raven.project: "e-elduro"
+

@@ -1,0 +1,17 @@
+# Builds the BLE capture agent for the raven host (BlueZ/D-Bus).
+# The binary is exported and runs on the host, not in a container:
+#   docker build -f Dockerfile.agent --target export -o bin .
+
+FROM rust:slim-bookworm AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY Cargo.toml ./
+COPY backend ./backend
+COPY capture ./capture
+RUN cargo build --release -p elduro-capture
+
+FROM scratch AS export
+COPY --from=build /app/target/release/elduro-capture /elduro-capture
+
