@@ -3,7 +3,7 @@
   import Lane from './lib/Lane.svelte'
   import EcgView from './lib/EcgView.svelte'
   import { computeMetrics, emptyLane } from './lib/metrics'
-  import type { LaneData } from './lib/types'
+  import type { LaneData, EcgStreamMsg } from './lib/types'
 
   const LANE_DEFS = [
     { key: 'ravenUsb', num: 1, title: 'RAVEN - ASUS BT-600 USB' },
@@ -22,8 +22,8 @@
 
   // Phase 2 ECG plumbing: status per source and live-frame subscribers.
   let ecgStatus: Record<string, { state: string; detail: string; device: string }> = $state({})
-  const ecgSubs: ((m: unknown) => void)[] = []
-  function registerEcg(fn: (m: unknown) => void) {
+  const ecgSubs: ((m: EcgStreamMsg) => void)[] = []
+  function registerEcg(fn: (m: EcgStreamMsg) => void) {
     ecgSubs.push(fn)
   }
   function sendCmd(cmd: object) {
@@ -98,7 +98,7 @@
       }
       const key = sourceLane(m.source)
       if (key) applyStatus(key, m)
-    } else if (m.t === 'ecg') {
+    } else if (m.t === 'ecg' || m.t === 'acc') {
       for (const fn of ecgSubs) fn(m)
     } else if (m.t === 'hr') {
       const key = sourceLane(m.source)

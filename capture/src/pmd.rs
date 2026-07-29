@@ -75,3 +75,109 @@ pub fn parse_ecg(data: &[u8]) -> Option<EcgFrame> {
     })
 }
 
+/// Nanoseconds between two accelerometer samples at 200 Hz.
+pub const ACC_PERIOD_NS: u64 = 1_000_000_000 / 200;
+
+/// Start accelerometer streaming at 200 Hz, 16-bit, +/-8 g.
+pub fn start_acc_cmd() -> Vec<u8> {
+    vec![
+        0x02, MTYPE_ACC, //
+        0x00, 0x01, 0xc8, 0x00, // sample rate = 200 Hz
+        0x01, 0x01, 0x10, 0x00, // resolution = 16 bit
+        0x02, 0x01, 0x08, 0x00, // range = +/-8 g
+    ]
+}
+
+#[derive(Debug)]
+pub struct AccFrame {
+    pub timestamp_ns: u64,
+    /// One [x, y, z] triple per sample, in milli-g.
+    pub samples_mg: Vec<[i32; 3]>,
+}
+
+/// Decode an accelerometer PMD data frame. Handles both the uncompressed
+/// layout (consecutive int16 LE X/Y/Z triples) and Polar's delta-compressed
+/// frame (a 16-bit reference sample followed by bit-packed signed deltas).
+/// The frame-type byte's high bit marks a compressed frame.
+pub fn parse_acc(data: &[u8]) -> Option<AccFrame> {
+    if data.len() < 10 || data[0] != MTYPE_ACC {
+        return None;
+    }
+    let timestamp_ns = u64::from_le_bytes(data[1..9].try_into().ok()?);
+    let frame_type = data[9];
+    let body = &data[10..];
+    let channels = 3usize;
+    let compressed = frame_type & 0x80 != 0;
+    let mut samples_mg: Vec<[i32; 3]> = Vec::new();
+
+    if !compressed {
+        for chunk in body.chunks_exact(2 * channels) {
+            samples_mg.push([
+                i16::from_le_bytes([chunk[0], chunk[1]]) as i32,
+                i16::from_le_bytes([chunk[2], chunk[3]]) as i32,
+                i16::from_le_bytes([chunk[4], chunk[5]]) as i32,
+            ]);
+        }
+        return Some(AccFrame {
+            timestamp_ns,
+            samples_mg,
+        });
+    }
+
+    if body.len() < channels * 2 {
+        return None;
+    }
+    let mut cur = [
+        i16::from_le_bytes([body[0], body[1]]) as i32,
+        i16::from_le_bytes([body[2], body[3]]) as i32,
+        i16::from_le_bytes([body[4], body[5]]) as i32,
+    ];
+    samples_mg.push(cur);
+    let mut pos = channels * 2;
+    while pos + 2 <= body.len() {
+        let delta_size = body[pos] as usize;
+        let sample_count = body[pos + 1] as usize;
+        pos += 2;
+        if delta_size == 0 || sample_count == 0 {
+            break;
+        }
+        let total = sample_count * channels;
+        let mut bit = 0usize;
+        let base_bit = pos * 8;
+        for v in 0..total {
+            let raw = read_bits_le(body, base_bit + bit, delta_size)?;
+            cur[v % channels] += sign_extend(raw, delta_size);
+            if v % channels == channels - 1 {
+                samples_mg.push(cur);
+            }
+            bit += delta_size;
+        }
+        pos += bit.div_ceil(8);
+    }
+    Some(AccFrame {
+        timestamp_ns,
+        samples_mg,
+    })
+}
+
+/// Read `n` bits (LSB-first) from a byte slice starting at an absolute bit
+/// offset.
+fn read_bits_le(data: &[u8], start_bit: usize, n: usize) -> Option<u32> {
+    let mut val: u32 = 0;
+    for i in 0..n {
+        let bit_pos = start_bit + i;
+        let byte = data.get(bit_pos / 8)?;
+        val |= (((byte >> (bit_pos % 8)) & 1) as u32) << i;
+    }
+    Some(val)
+}
+
+/// Sign-extend an `n`-bit two's-complement value held in a u32 to i32.
+fn sign_extend(val: u32, bits: usize) -> i32 {
+    if bits == 0 || bits >= 32 {
+        return val as i32;
+    }
+    let shift = 32 - bits;
+    ((val << shift) as i32) >> shift
+}
+

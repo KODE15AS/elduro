@@ -362,7 +362,7 @@ async fn run_session(
     };
 
     if mode == "ecg" {
-        stream_ecg(&p, &source, &device_name, battery, duration_s, &out, &mut stop, my_gen).await;
+        stream_pmd(&p, &source, &device_name, battery, duration_s, &out, &mut stop, my_gen).await;
         p.disconnect().await.ok();
         return;
     }
@@ -432,12 +432,14 @@ async fn run_session(
     send(status(&source, "stopped", reason, None, None));
 }
 
-/// Phase 2: negotiate the PMD service and stream raw 130 Hz ECG. Forwards
-/// decoded frames to the backend for the live view and writes every frame
-/// losslessly to disk (device timestamp, host timestamp, raw bytes and
-/// decoded microvolts) so nothing is lost before later analysis.
+/// Phase 2: negotiate the PMD service and stream raw 130 Hz ECG plus 200 Hz
+/// accelerometer concurrently (both ride the PMD data characteristic and are
+/// told apart by their leading measurement-type byte). Forwards decoded
+/// frames to the backend for the live view and writes every frame losslessly
+/// to disk (device timestamp, host timestamp, raw bytes, decoded values) so
+/// nothing is lost before later analysis.
 #[allow(clippy::too_many_arguments)]
-async fn stream_ecg(
+async fn stream_pmd(
     p: &Peripheral,
     source: &str,
     device_name: &str,
@@ -462,7 +464,7 @@ async fn stream_ecg(
     };
 
     // Enable data notifications and control-point indications, then request
-    // the ECG measurement start.
+    // the ECG measurement start (required) and the ACC stream (best-effort).
     if let Err(e) = p.subscribe(&data_char).await {
         send(status(source, "error", &format!("PMD data subscribe failed: {e}"), None, None));
         return;
@@ -472,10 +474,14 @@ async fn stream_ecg(
         .write(&control, &pmd::start_ecg_cmd(), WriteType::WithResponse)
         .await
     {
-        send(status(source, "error", &format!("PMD start command failed: {e}"), None, None));
+        send(status(source, "error", &format!("PMD ECG start failed: {e}"), None, None));
         p.unsubscribe(&data_char).await.ok();
         return;
     }
+    let acc_on = p
+        .write(&control, &pmd::start_acc_cmd(), WriteType::WithResponse)
+        .await
+        .is_ok();
 
     let mut notifications = match p.notifications().await {
         Ok(n) => n,
@@ -487,18 +493,20 @@ async fn stream_ecg(
     };
 
     // Open a lossless recording file next to the agent.
-    let mut recorder = EcgRecorder::open(source, device_name);
+    let mut recorder = PmdRecorder::open(source, device_name);
+    let acc_txt = if acc_on { "ECG+ACC" } else { "ECG (ACC unavailable)" };
     if let Some(path) = recorder.path() {
-        send(status(source, "streaming", &format!("recording to {path}"), Some(device_name), battery));
+        send(status(source, "streaming", &format!("{acc_txt}, recording to {path}"), Some(device_name), battery));
     } else {
-        send(status(source, "streaming", "recording unavailable", Some(device_name), battery));
+        send(status(source, "streaming", &format!("{acc_txt}, recording unavailable"), Some(device_name), battery));
     }
 
     let started = Instant::now();
     let effective_s = if duration_s == 0 { 24 * 3600 } else { duration_s };
     let deadline = started + Duration::from_secs(effective_s);
-    let mut total_samples: u64 = 0;
-    let mut prev_ts_ns: Option<u64> = None;
+    let mut ecg_total: u64 = 0;
+    let mut acc_total: u64 = 0;
+    let mut prev_ecg_ts: Option<u64> = None;
     let mut gaps: u64 = 0;
     let reason;
 
@@ -516,62 +524,77 @@ async fn stream_ecg(
             }
             n = notifications.next() => {
                 let Some(data) = n else { reason = "disconnected"; break; };
-                if data.uuid != pmd::PMD_DATA {
+                if data.uuid != pmd::PMD_DATA || data.value.is_empty() {
                     continue;
                 }
                 let host_unix_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0);
-                let Some(frame) = pmd::parse_ecg(&data.value) else { continue; };
-                let n_samples = frame.samples_uv.len() as u64;
-                total_samples += n_samples;
-
-                // Detect dropped frames via the device timestamp cadence.
-                if let Some(prev) = prev_ts_ns {
-                    let expected = n_samples * pmd::ECG_PERIOD_NS;
-                    let delta = frame.timestamp_ns.saturating_sub(prev);
-                    if delta > expected + pmd::ECG_PERIOD_NS {
-                        gaps += 1;
+                match data.value[0] {
+                    pmd::MTYPE_ECG => {
+                        let Some(frame) = pmd::parse_ecg(&data.value) else { continue; };
+                        let n_samples = frame.samples_uv.len() as u64;
+                        ecg_total += n_samples;
+                        // Detect dropped ECG frames via the device timestamp cadence.
+                        if let Some(prev) = prev_ecg_ts {
+                            let expected = n_samples * pmd::ECG_PERIOD_NS;
+                            if frame.timestamp_ns.saturating_sub(prev) > expected + pmd::ECG_PERIOD_NS {
+                                gaps += 1;
+                            }
+                        }
+                        prev_ecg_ts = Some(frame.timestamp_ns);
+                        recorder.write_ecg(host_unix_ns, &frame, &data.value);
+                        send(serde_json::json!({
+                            "t": "ecg",
+                            "source": source,
+                            "ts_device_ns": frame.timestamp_ns,
+                            "ts_host_ns": host_unix_ns,
+                            "elapsed_ms": started.elapsed().as_millis() as u64,
+                            "samples": frame.samples_uv,
+                            "total": ecg_total,
+                            "gaps": gaps,
+                        }).to_string());
                     }
+                    pmd::MTYPE_ACC => {
+                        let Some(frame) = pmd::parse_acc(&data.value) else { continue; };
+                        acc_total += frame.samples_mg.len() as u64;
+                        recorder.write_acc(host_unix_ns, &frame, &data.value);
+                        send(serde_json::json!({
+                            "t": "acc",
+                            "source": source,
+                            "ts_device_ns": frame.timestamp_ns,
+                            "ts_host_ns": host_unix_ns,
+                            "samples": frame.samples_mg,
+                            "total": acc_total,
+                        }).to_string());
+                    }
+                    _ => {}
                 }
-                prev_ts_ns = Some(frame.timestamp_ns);
-
-                recorder.write_frame(host_unix_ns, &frame, &data.value);
-
-                let msg = serde_json::json!({
-                    "t": "ecg",
-                    "source": source,
-                    "ts_device_ns": frame.timestamp_ns,
-                    "ts_host_ns": host_unix_ns,
-                    "elapsed_ms": started.elapsed().as_millis() as u64,
-                    "samples": frame.samples_uv,
-                    "total": total_samples,
-                    "gaps": gaps,
-                });
-                send(msg.to_string());
             }
         }
     }
 
-    p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ECG), WriteType::WithResponse)
-        .await
-        .ok();
+    p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ECG), WriteType::WithResponse).await.ok();
+    if acc_on {
+        p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ACC), WriteType::WithResponse).await.ok();
+    }
     p.unsubscribe(&data_char).await.ok();
     p.unsubscribe(&control).await.ok();
     recorder.close();
     send(status(source, "stopped", reason, None, None));
 }
 
-/// Appends raw ECG frames to a JSONL file (one JSON object per frame). Each
-/// line keeps the device timestamp, the host arrival time, the raw BLE bytes
-/// as hex, and the decoded microvolt samples, so the recording is lossless.
-struct EcgRecorder {
+/// Appends raw PMD frames to a JSONL file (one JSON object per frame). Each
+/// line keeps the stream kind, the device timestamp, the host arrival time,
+/// the raw BLE bytes as hex, and the decoded values, so the recording is
+/// lossless for both the ECG and accelerometer streams.
+struct PmdRecorder {
     writer: Option<std::io::BufWriter<std::fs::File>>,
     path: Option<String>,
 }
 
-impl EcgRecorder {
+impl PmdRecorder {
     fn open(source: &str, device_name: &str) -> Self {
         if std::fs::create_dir_all("recordings").is_err() {
             return Self { writer: None, path: None };
@@ -581,19 +604,20 @@ impl EcgRecorder {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let safe_source = source.replace([':', '/', '\\'], "-");
-        let path = format!("recordings/ecg_{safe_source}_{epoch}.jsonl");
+        let path = format!("recordings/pmd_{safe_source}_{epoch}.jsonl");
         let Ok(file) = std::fs::File::create(&path) else {
             return Self { writer: None, path: None };
         };
         let mut writer = std::io::BufWriter::new(file);
         let header = serde_json::json!({
-            "type": "elduro-ecg-recording",
-            "version": 1,
+            "type": "elduro-pmd-recording",
+            "version": 2,
             "source": source,
             "device": device_name,
-            "sample_rate_hz": 130,
-            "resolution_bits": 14,
-            "unit": "microvolt",
+            "streams": {
+                "ecg": { "sample_rate_hz": 130, "resolution_bits": 14, "unit": "microvolt" },
+                "acc": { "sample_rate_hz": 200, "resolution_bits": 16, "range_g": 8, "unit": "milli_g" }
+            },
             "device_epoch": "2000-01-01T00:00:00Z",
             "started_unix_ns": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0),
         });
@@ -605,14 +629,29 @@ impl EcgRecorder {
         self.path.as_deref()
     }
 
-    fn write_frame(&mut self, host_unix_ns: u64, frame: &pmd::EcgFrame, raw: &[u8]) {
+    fn write_ecg(&mut self, host_unix_ns: u64, frame: &pmd::EcgFrame, raw: &[u8]) {
         let Some(writer) = self.writer.as_mut() else { return };
         let raw_hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let line = serde_json::json!({
+            "s": "ecg",
             "ts_device_ns": frame.timestamp_ns,
             "ts_host_ns": host_unix_ns,
             "n": frame.samples_uv.len(),
             "uv": frame.samples_uv,
+            "raw": raw_hex,
+        });
+        let _ = writeln!(writer, "{line}");
+    }
+
+    fn write_acc(&mut self, host_unix_ns: u64, frame: &pmd::AccFrame, raw: &[u8]) {
+        let Some(writer) = self.writer.as_mut() else { return };
+        let raw_hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+        let line = serde_json::json!({
+            "s": "acc",
+            "ts_device_ns": frame.timestamp_ns,
+            "ts_host_ns": host_unix_ns,
+            "n": frame.samples_mg.len(),
+            "mg": frame.samples_mg,
             "raw": raw_hex,
         });
         let _ = writeln!(writer, "{line}");
