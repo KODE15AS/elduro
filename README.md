@@ -38,6 +38,22 @@ docker build -f Dockerfile.agent --target export -o bin .
 tailscale serve --bg --https=8443 http://127.0.0.1:8094
 ```
 
+## Lane 2: Windows agent (Lenovo)
+
+Cross-compile on raven and publish through the web container:
+
+```sh
+docker build -f Dockerfile.agent-windows --target export -o bin .
+docker cp bin/elduro-capture.exe elduro-web-1:/app/static/elduro-capture.exe
+```
+
+Then on the laptop (PowerShell):
+
+```powershell
+Invoke-WebRequest -Uri https://cadify104raven.tail14de1b.ts.net:8443/elduro-capture.exe -OutFile $env:USERPROFILE\elduro-capture.exe
+& $env:USERPROFILE\elduro-capture.exe --backend ws://100.65.19.39:8094/ws/agent --agent lenovo
+```
+
 ## Dev
 
 - Backend: `cargo run -p elduro-backend` (serves on :8080)
