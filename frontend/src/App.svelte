@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import Lane from './lib/Lane.svelte'
+  import EcgView from './lib/EcgView.svelte'
   import { WebBTCapture } from './lib/webbt'
   import { computeMetrics, emptyLane } from './lib/metrics'
   import type { LaneData, Sample } from './lib/types'
@@ -22,6 +23,20 @@
   let activeLane: string | null = $state(null)
   let durationS = $state(60)
   let wsUp = $state(false)
+  let view: 'hr' | 'ecg' = $state('hr')
+
+  // Phase 2 ECG plumbing: status per source and live-frame subscribers.
+  let ecgStatus: Record<string, { state: string; detail: string; device: string }> = $state({})
+  const ecgSubs: ((m: unknown) => void)[] = []
+  function registerEcg(fn: (m: unknown) => void) {
+    ecgSubs.push(fn)
+  }
+  function sendCmd(cmd: object) {
+    ws?.send(JSON.stringify(cmd))
+  }
+  function ecgStatusFor(source: string) {
+    return ecgStatus[source] ?? null
+  }
 
   let ws: WebSocket | null = null
   let closed = false
@@ -87,8 +102,15 @@
       for (const s of m.sources) next[s.id] = s.label
       sources = next
     } else if (m.t === 'status') {
+      ecgStatus[m.source] = {
+        state: m.state ?? '',
+        detail: m.detail ?? '',
+        device: m.device ?? '',
+      }
       const key = sourceLane(m.source)
       if (key) applyStatus(key, m)
+    } else if (m.t === 'ecg') {
+      for (const fn of ecgSubs) fn(m)
     } else if (m.t === 'hr') {
       const key = sourceLane(m.source)
       if (key) {
@@ -177,35 +199,54 @@
 <header>
   <div class="brand">ELDURO <span class="heart">&hearts;</span></div>
   <div class="subtitle">POLAR H10 SIGNAL LAB</div>
+  <div class="tabs">
+    <button class:active={view === 'hr'} onclick={() => (view = 'hr')}>
+      HR COMPARE
+    </button>
+    <button class:active={view === 'ecg'} onclick={() => (view = 'ecg')}>
+      RAW ECG
+    </button>
+  </div>
   <div class="controls">
-    <label>
-      Window
-      <select bind:value={durationS}>
-        <option value={30}>30 s</option>
-        <option value={60}>60 s</option>
-        <option value={120}>120 s</option>
-        <option value={0}>manual</option>
-      </select>
-    </label>
+    {#if view === 'hr'}
+      <label>
+        Window
+        <select bind:value={durationS}>
+          <option value={30}>30 s</option>
+          <option value={60}>60 s</option>
+          <option value={120}>120 s</option>
+          <option value={0}>manual</option>
+        </select>
+      </label>
+    {/if}
     <span class="conn" class:up={wsUp}>
       {wsUp ? 'backend connected' : 'backend offline'}
     </span>
   </div>
 </header>
 
-<main>
-  {#each LANE_DEFS as d (d.key)}
-    <Lane
-      num={d.num}
-      title={d.title}
-      lane={lanes[d.key]}
-      available={d.key === 'webbt' || laneSource(d.key) !== null}
-      locked={activeLane !== null && activeLane !== d.key}
-      onrecord={() => record(d.key)}
-      onstop={() => stop(d.key)}
-    />
-  {/each}
-</main>
+{#if view === 'hr'}
+  <main>
+    {#each LANE_DEFS as d (d.key)}
+      <Lane
+        num={d.num}
+        title={d.title}
+        lane={lanes[d.key]}
+        available={d.key === 'webbt' || laneSource(d.key) !== null}
+        locked={activeLane !== null && activeLane !== d.key}
+        onrecord={() => record(d.key)}
+        onstop={() => stop(d.key)}
+      />
+    {/each}
+  </main>
+{:else}
+  <EcgView
+    sources={sources}
+    send={sendCmd}
+    register={registerEcg}
+    onstatus={ecgStatusFor}
+  />
+{/if}
 
 <style>
   header {
@@ -230,7 +271,28 @@
     font-size: 15px;
     letter-spacing: 2px;
     color: var(--color-slate);
+  }
+  .tabs {
+    display: flex;
+    gap: 6px;
     flex: 1;
+    margin-left: 10px;
+  }
+  .tabs button {
+    font-family: var(--font-display);
+    font-size: 14px;
+    letter-spacing: 1.5px;
+    padding: 5px 14px;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-bg);
+    color: var(--color-slate);
+    cursor: pointer;
+  }
+  .tabs button.active {
+    background: var(--color-accent);
+    color: #fff;
+    border-color: var(--color-accent);
   }
   .controls {
     display: flex;

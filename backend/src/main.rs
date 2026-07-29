@@ -134,6 +134,9 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
         if let Some(d) = v["duration_s"].as_u64() {
             cmd["duration_s"] = d.into();
         }
+        if let Some(m) = v["mode"].as_str() {
+            cmd["mode"] = m.into();
+        }
         let _ = conn.tx.send(cmd.to_string());
     } else {
         let _ = state.ui_tx.send(

@@ -1,7 +1,10 @@
-use std::error::Error;
-use std::time::Duration;
+mod pmd;
 
-use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use std::error::Error;
+use std::io::Write as _;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
@@ -138,6 +141,8 @@ async fn run(url: &str, agent: &str) -> Result<(), Box<dyn Error>> {
                         let adapter_id = v["adapter"].as_str().unwrap_or("");
                         let source = v["source"].as_str().unwrap_or("").to_string();
                         let duration_s = v["duration_s"].as_u64().unwrap_or(60);
+                        // "hr" (Phase 1) or "ecg" (Phase 2 raw stream).
+                        let mode = v["mode"].as_str().unwrap_or("hr").to_string();
                         let Some((_, _, adapter)) = adapters.iter().find(|(id, _, _)| id == adapter_id) else {
                             let _ = out_tx.send(status(&source, "error", "adapter not found", None, None));
                             continue;
@@ -149,7 +154,7 @@ async fn run(url: &str, agent: &str) -> Result<(), Box<dyn Error>> {
                         let stop = stop_rx.clone();
                         let my_gen = generation;
                         tokio::spawn(async move {
-                            run_session(adapter, source, duration_s, out, stop, my_gen).await;
+                            run_session(adapter, source, mode, duration_s, out, stop, my_gen).await;
                         });
                     }
                     Some("stop") => {
@@ -191,6 +196,7 @@ fn is_cancelled(stop: &watch::Receiver<u64>, my_gen: u64) -> bool {
 async fn run_session(
     adapter: Adapter,
     source: String,
+    mode: String,
     duration_s: u64,
     out: mpsc::UnboundedSender<String>,
     mut stop: watch::Receiver<u64>,
@@ -354,6 +360,13 @@ async fn run_session(
         Some(c) => p.read(c).await.ok().and_then(|v| v.first().copied()),
         None => None,
     };
+
+    if mode == "ecg" {
+        stream_ecg(&p, &source, &device_name, battery, duration_s, &out, &mut stop, my_gen).await;
+        p.disconnect().await.ok();
+        return;
+    }
+
     let Some(hrm) = chars.iter().find(|c| c.uuid == HRM_UUID).cloned() else {
         send(status(&source, "error", "no heart rate characteristic", None, None));
         p.disconnect().await.ok();
@@ -417,6 +430,199 @@ async fn run_session(
     p.unsubscribe(&hrm).await.ok();
     p.disconnect().await.ok();
     send(status(&source, "stopped", reason, None, None));
+}
+
+/// Phase 2: negotiate the PMD service and stream raw 130 Hz ECG. Forwards
+/// decoded frames to the backend for the live view and writes every frame
+/// losslessly to disk (device timestamp, host timestamp, raw bytes and
+/// decoded microvolts) so nothing is lost before later analysis.
+#[allow(clippy::too_many_arguments)]
+async fn stream_ecg(
+    p: &Peripheral,
+    source: &str,
+    device_name: &str,
+    battery: Option<u8>,
+    duration_s: u64,
+    out: &mpsc::UnboundedSender<String>,
+    stop: &mut watch::Receiver<u64>,
+    my_gen: u64,
+) {
+    let send = |msg: String| {
+        let _ = out.send(msg);
+    };
+
+    let chars = p.characteristics();
+    let Some(control) = chars.iter().find(|c| c.uuid == pmd::PMD_CONTROL).cloned() else {
+        send(status(source, "error", "no PMD control point (raw ECG unsupported)", None, None));
+        return;
+    };
+    let Some(data_char) = chars.iter().find(|c| c.uuid == pmd::PMD_DATA).cloned() else {
+        send(status(source, "error", "no PMD data characteristic", None, None));
+        return;
+    };
+
+    // Enable data notifications and control-point indications, then request
+    // the ECG measurement start.
+    if let Err(e) = p.subscribe(&data_char).await {
+        send(status(source, "error", &format!("PMD data subscribe failed: {e}"), None, None));
+        return;
+    }
+    p.subscribe(&control).await.ok();
+    if let Err(e) = p
+        .write(&control, &pmd::start_ecg_cmd(), WriteType::WithResponse)
+        .await
+    {
+        send(status(source, "error", &format!("PMD start command failed: {e}"), None, None));
+        p.unsubscribe(&data_char).await.ok();
+        return;
+    }
+
+    let mut notifications = match p.notifications().await {
+        Ok(n) => n,
+        Err(e) => {
+            send(status(source, "error", &format!("notifications failed: {e}"), None, None));
+            p.unsubscribe(&data_char).await.ok();
+            return;
+        }
+    };
+
+    // Open a lossless recording file next to the agent.
+    let mut recorder = EcgRecorder::open(source, device_name);
+    if let Some(path) = recorder.path() {
+        send(status(source, "streaming", &format!("recording to {path}"), Some(device_name), battery));
+    } else {
+        send(status(source, "streaming", "recording unavailable", Some(device_name), battery));
+    }
+
+    let started = Instant::now();
+    let effective_s = if duration_s == 0 { 24 * 3600 } else { duration_s };
+    let deadline = started + Duration::from_secs(effective_s);
+    let mut total_samples: u64 = 0;
+    let mut prev_ts_ns: Option<u64> = None;
+    let mut gaps: u64 = 0;
+    let reason;
+
+    loop {
+        tokio::select! {
+            _ = stop.changed() => {
+                if is_cancelled(stop, my_gen) {
+                    reason = "user";
+                    break;
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                reason = "duration";
+                break;
+            }
+            n = notifications.next() => {
+                let Some(data) = n else { reason = "disconnected"; break; };
+                if data.uuid != pmd::PMD_DATA {
+                    continue;
+                }
+                let host_unix_ns = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                let Some(frame) = pmd::parse_ecg(&data.value) else { continue; };
+                let n_samples = frame.samples_uv.len() as u64;
+                total_samples += n_samples;
+
+                // Detect dropped frames via the device timestamp cadence.
+                if let Some(prev) = prev_ts_ns {
+                    let expected = n_samples * pmd::ECG_PERIOD_NS;
+                    let delta = frame.timestamp_ns.saturating_sub(prev);
+                    if delta > expected + pmd::ECG_PERIOD_NS {
+                        gaps += 1;
+                    }
+                }
+                prev_ts_ns = Some(frame.timestamp_ns);
+
+                recorder.write_frame(host_unix_ns, &frame, &data.value);
+
+                let msg = serde_json::json!({
+                    "t": "ecg",
+                    "source": source,
+                    "ts_device_ns": frame.timestamp_ns,
+                    "ts_host_ns": host_unix_ns,
+                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                    "samples": frame.samples_uv,
+                    "total": total_samples,
+                    "gaps": gaps,
+                });
+                send(msg.to_string());
+            }
+        }
+    }
+
+    p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ECG), WriteType::WithResponse)
+        .await
+        .ok();
+    p.unsubscribe(&data_char).await.ok();
+    p.unsubscribe(&control).await.ok();
+    recorder.close();
+    send(status(source, "stopped", reason, None, None));
+}
+
+/// Appends raw ECG frames to a JSONL file (one JSON object per frame). Each
+/// line keeps the device timestamp, the host arrival time, the raw BLE bytes
+/// as hex, and the decoded microvolt samples, so the recording is lossless.
+struct EcgRecorder {
+    writer: Option<std::io::BufWriter<std::fs::File>>,
+    path: Option<String>,
+}
+
+impl EcgRecorder {
+    fn open(source: &str, device_name: &str) -> Self {
+        if std::fs::create_dir_all("recordings").is_err() {
+            return Self { writer: None, path: None };
+        }
+        let epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let safe_source = source.replace([':', '/', '\\'], "-");
+        let path = format!("recordings/ecg_{safe_source}_{epoch}.jsonl");
+        let Ok(file) = std::fs::File::create(&path) else {
+            return Self { writer: None, path: None };
+        };
+        let mut writer = std::io::BufWriter::new(file);
+        let header = serde_json::json!({
+            "type": "elduro-ecg-recording",
+            "version": 1,
+            "source": source,
+            "device": device_name,
+            "sample_rate_hz": 130,
+            "resolution_bits": 14,
+            "unit": "microvolt",
+            "device_epoch": "2000-01-01T00:00:00Z",
+            "started_unix_ns": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0),
+        });
+        let _ = writeln!(writer, "{header}");
+        Self { writer: Some(writer), path: Some(path) }
+    }
+
+    fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    fn write_frame(&mut self, host_unix_ns: u64, frame: &pmd::EcgFrame, raw: &[u8]) {
+        let Some(writer) = self.writer.as_mut() else { return };
+        let raw_hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
+        let line = serde_json::json!({
+            "ts_device_ns": frame.timestamp_ns,
+            "ts_host_ns": host_unix_ns,
+            "n": frame.samples_uv.len(),
+            "uv": frame.samples_uv,
+            "raw": raw_hex,
+        });
+        let _ = writeln!(writer, "{line}");
+    }
+
+    fn close(&mut self) {
+        if let Some(writer) = self.writer.as_mut() {
+            let _ = writer.flush();
+        }
+    }
 }
 
 /// Parse a standard Heart Rate Measurement (0x2A37) payload.
