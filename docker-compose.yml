@@ -9,6 +9,10 @@ services:
     user: "1000:1000"
     ports:
       - "8094:8080"
+    volumes:
+      # Built agent binaries (e.g. the Windows exe for lane 2) are
+      # downloadable at /dl/.
+      - ./bin:/app/static/dl:ro
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"

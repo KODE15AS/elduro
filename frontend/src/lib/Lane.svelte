@@ -58,6 +58,13 @@
     <div class="status" class:error={lane.status === 'error'}>
       {statusText}{lane.device ? ' - ' + lane.device : ''}
     </div>
+    {#if !available && num === 2}
+      <div class="setup">
+        <a href="/dl/elduro-capture.exe" download>Download the Windows agent</a>
+        and run it:
+        <code>elduro-capture.exe --backend ws://100.65.19.39:8094/ws/agent --agent lenovo</code>
+      </div>
+    {/if}
     <div class="readout">
       <span class="heart" class:beat={lane.status === 'streaming'}>&hearts;</span>
       <span class="bpm">{lastSample ? lastSample.bpm : '--'}</span>
@@ -140,6 +147,23 @@
   }
   .status.error {
     color: var(--color-error);
+  }
+  .setup {
+    font-size: 11px;
+    color: var(--color-slate);
+    line-height: 1.5;
+  }
+  .setup a {
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .setup code {
+    display: block;
+    font-size: 10px;
+    background: var(--color-bg);
+    border-radius: 6px;
+    padding: 3px 6px;
+    user-select: all;
   }
   .readout {
     display: flex;
