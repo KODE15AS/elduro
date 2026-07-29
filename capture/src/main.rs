@@ -15,6 +15,10 @@ const BATT_UUID: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
 
 const SCAN_TIMEOUT_S: u64 = 30;
 const CONNECT_ATTEMPTS: u32 = 3;
+/// Advertisement RSSI below this is considered too weak for a stable link.
+const RSSI_MIN_DBM: i16 = -85;
+/// How long to sample advertisement RSSI after the device is first seen.
+const RSSI_SAMPLE_S: u64 = 3;
 
 #[tokio::main]
 async fn main() {
@@ -192,24 +196,64 @@ async fn run_session(
         return;
     }
 
+    // Scan for the device, then keep scanning briefly to sample its
+    // advertisement RSSI as a pre-flight signal strength test.
     let mut found: Option<Peripheral> = None;
+    let mut best_rssi: Option<i16> = None;
+    let mut sample_until: Option<Instant> = None;
     let scan_deadline = Instant::now() + Duration::from_secs(SCAN_TIMEOUT_S);
-    'scan: while Instant::now() < scan_deadline {
+    loop {
         if is_cancelled(&stop, my_gen) {
             adapter.stop_scan().await.ok();
             send(status(&source, "stopped", "user", None, None));
             return;
         }
-        for p in adapter.peripherals().await.unwrap_or_default() {
-            if let Ok(Some(props)) = p.properties().await {
-                let name = props.local_name.clone().unwrap_or_default();
-                if props.services.contains(&HRS_UUID) || name.contains("Polar") {
-                    found = Some(p);
-                    break 'scan;
+        let now = Instant::now();
+        match sample_until {
+            Some(t) => {
+                if now >= t {
+                    break;
+                }
+            }
+            None => {
+                if now >= scan_deadline {
+                    break;
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        for p in adapter.peripherals().await.unwrap_or_default() {
+            let Ok(Some(props)) = p.properties().await else {
+                continue;
+            };
+            match &found {
+                None => {
+                    let name = props.local_name.clone().unwrap_or_default();
+                    if props.services.contains(&HRS_UUID) || name.contains("Polar") {
+                        best_rssi = props.rssi;
+                        found = Some(p);
+                        sample_until = Some(now + Duration::from_secs(RSSI_SAMPLE_S));
+                        send(status(
+                            &source,
+                            "scanning",
+                            "device found, measuring signal strength",
+                            None,
+                            None,
+                        ));
+                        break;
+                    }
+                }
+                Some(f) => {
+                    if f.id() == p.id() {
+                        if let Some(r) = props.rssi {
+                            if best_rssi.is_none_or(|b| r > b) {
+                                best_rssi = Some(r);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(400)).await;
     }
     adapter.stop_scan().await.ok();
 
@@ -231,7 +275,24 @@ async fn run_session(
         .and_then(|pr| pr.local_name)
         .unwrap_or_else(|| p.address().to_string());
 
-    send(status(&source, "connecting", "", Some(&device_name), None));
+    if let Some(r) = best_rssi {
+        if r < RSSI_MIN_DBM {
+            send(status(
+                &source,
+                "error",
+                &format!("signal too weak for recording (RSSI {r} dBm, needs {RSSI_MIN_DBM} dBm or better)"),
+                Some(&device_name),
+                None,
+            ));
+            return;
+        }
+    }
+    let rssi_txt = match best_rssi {
+        Some(r) => format!("RSSI {r} dBm"),
+        None => String::new(),
+    };
+
+    send(status(&source, "connecting", &rssi_txt, Some(&device_name), None));
     // Let the controller settle after scanning; connecting immediately after
     // scan-stop is a common trigger for le-connection-abort-by-local on
     // Intel adapters.

@@ -106,7 +106,15 @@
         finishLane(key)
       }
     } else if (m.state === 'error') {
-      lane.detail = m.detail ?? ''
+      let detail = m.detail ?? ''
+      // Lane 3 (onboard AX211) is known-weak: point the user at the USB radio.
+      if (
+        key === 'ravenInt' &&
+        (detail.includes('too weak') || detail.includes('no heart rate device'))
+      ) {
+        detail += ' - lane 3 onboard radio is too weak for recording, use USB lane 4 (ASUS BT-600)'
+      }
+      lane.detail = detail
       lane.status = 'error'
       if (activeLane === key) activeLane = null
     } else if (RECORDING_STATES.includes(m.state)) {
