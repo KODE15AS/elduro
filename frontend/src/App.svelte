@@ -2,28 +2,23 @@
   import { onMount } from 'svelte'
   import Lane from './lib/Lane.svelte'
   import EcgView from './lib/EcgView.svelte'
-  import { WebBTCapture } from './lib/webbt'
   import { computeMetrics, emptyLane } from './lib/metrics'
-  import type { LaneData, Sample } from './lib/types'
+  import type { LaneData } from './lib/types'
 
   const LANE_DEFS = [
-    { key: 'webbt', num: 1, title: 'LENOVO - WEB BLUETOOTH' },
+    { key: 'ravenUsb', num: 1, title: 'RAVEN - ASUS BT-600 USB' },
     { key: 'lenovo', num: 2, title: 'LENOVO - NATIVE AGENT' },
-    { key: 'ravenInt', num: 3, title: 'RAVEN - ONBOARD AX211' },
-    { key: 'ravenUsb', num: 4, title: 'RAVEN - ASUS BT-600 USB' },
   ]
 
   let sources: Record<string, string> = $state({})
   let lanes: Record<string, LaneData> = $state({
-    webbt: emptyLane(),
-    lenovo: emptyLane(),
-    ravenInt: emptyLane(),
     ravenUsb: emptyLane(),
+    lenovo: emptyLane(),
   })
   let activeLane: string | null = $state(null)
   let durationS = $state(60)
   let wsUp = $state(false)
-  let view: 'hr' | 'ecg' = $state('hr')
+  let view: 'hr' | 'ecg' = $state('ecg')
 
   // Phase 2 ECG plumbing: status per source and live-frame subscribers.
   let ecgStatus: Record<string, { state: string; detail: string; device: string }> = $state({})
@@ -40,21 +35,15 @@
 
   let ws: WebSocket | null = null
   let closed = false
-  const webbt = new WebBTCapture()
-  let webbtTimer: ReturnType<typeof setTimeout> | null = null
 
   const RECORDING_STATES = ['scanning', 'connecting', 'streaming']
 
   function laneSource(key: string): string | null {
     const ids = Object.keys(sources)
     switch (key) {
-      case 'webbt':
-        return 'webbt'
       case 'lenovo':
         // Any non-raven agent (e.g. the laptop, whatever its hostname is).
         return ids.find((s) => !s.startsWith('raven:')) ?? null
-      case 'ravenInt':
-        return ids.includes('raven:hci0') ? 'raven:hci0' : null
       case 'ravenUsb':
         return ids.find((s) => s.startsWith('raven:') && s !== 'raven:hci0') ?? null
     }
@@ -129,15 +118,7 @@
         finishLane(key)
       }
     } else if (m.state === 'error') {
-      let detail = m.detail ?? ''
-      // Lane 3 (onboard AX211) is known-weak: point the user at the USB radio.
-      if (
-        key === 'ravenInt' &&
-        (detail.includes('too weak') || detail.includes('no heart rate device'))
-      ) {
-        detail += ' - lane 3 onboard radio is too weak for recording, use USB lane 4 (ASUS BT-600)'
-      }
-      lane.detail = detail
+      lane.detail = m.detail ?? ''
       lane.status = 'error'
       if (activeLane === key) activeLane = null
     } else if (RECORDING_STATES.includes(m.state)) {
@@ -151,10 +132,6 @@
     lane.metrics = computeMetrics(lane.samples)
     lane.status = lane.samples.length ? 'done' : 'idle'
     if (activeLane === key) activeLane = null
-    if (key === 'webbt' && webbtTimer) {
-      clearTimeout(webbtTimer)
-      webbtTimer = null
-    }
   }
 
   function record(key: string) {
@@ -169,30 +146,12 @@
     lane.detail = ''
     lane.status = 'scanning'
     activeLane = key
-
-    if (key === 'webbt') {
-      webbt.start({
-        onstatus: (state, detail, extra) =>
-          applyStatus('webbt', { state, detail, ...extra }),
-        onsample: (s: Sample) => {
-          lanes.webbt.samples.push(s)
-        },
-      })
-      if (durationS > 0) {
-        webbtTimer = setTimeout(() => webbt.stop('duration'), durationS * 1000)
-      }
-    } else {
-      ws?.send(JSON.stringify({ t: 'start', source: src, duration_s: durationS }))
-    }
+    ws?.send(JSON.stringify({ t: 'start', source: src, duration_s: durationS }))
   }
 
   function stop(key: string) {
-    if (key === 'webbt') {
-      webbt.stop('user')
-    } else {
-      const src = laneSource(key)
-      if (src) ws?.send(JSON.stringify({ t: 'stop', source: src }))
-    }
+    const src = laneSource(key)
+    if (src) ws?.send(JSON.stringify({ t: 'stop', source: src }))
   }
 </script>
 
@@ -232,7 +191,7 @@
         num={d.num}
         title={d.title}
         lane={lanes[d.key]}
-        available={d.key === 'webbt' || laneSource(d.key) !== null}
+        available={laneSource(d.key) !== null}
         locked={activeLane !== null && activeLane !== d.key}
         onrecord={() => record(d.key)}
         onstop={() => stop(d.key)}
@@ -329,7 +288,7 @@
   main {
     height: calc(100vh - 58px);
     display: grid;
-    grid-template-rows: repeat(4, 1fr);
+    grid-auto-rows: 1fr;
     gap: 10px;
     padding: 10px 14px 14px;
     box-sizing: border-box;
