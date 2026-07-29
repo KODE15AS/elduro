@@ -38,9 +38,19 @@
   const sourceIds = $derived(Object.keys(sources))
   const status = $derived(selected ? onstatus(selected) : null)
 
+  // Friendly names matching the HR-compare lanes, so the radio is obvious.
+  function friendlyLabel(id: string): string {
+    if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
+    if (id.startsWith('raven:')) return 'Raven - ASUS BT-600 USB'
+    return `Lenovo - native agent (${id.split(':')[0]})`
+  }
+  // Prefer any radio over the known-weak onboard AX211.
+  function preferredSource(ids: string[]): string {
+    return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''
+  }
+
   $effect(() => {
-    // Default the selector to the first available native source.
-    if (!selected && sourceIds.length) selected = sourceIds[0]
+    if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
   })
 
   onMount(() => {
@@ -162,7 +172,7 @@
           <option value="">no native agent connected</option>
         {/if}
         {#each sourceIds as id (id)}
-          <option value={id}>{sources[id]}</option>
+          <option value={id}>{friendlyLabel(id)}</option>
         {/each}
       </select>
     </label>
