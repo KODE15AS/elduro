@@ -14,6 +14,7 @@ const HRM_UUID: Uuid = Uuid::from_u128(0x00002a37_0000_1000_8000_00805f9b34fb);
 const BATT_UUID: Uuid = Uuid::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb);
 
 const SCAN_TIMEOUT_S: u64 = 30;
+const CONNECT_ATTEMPTS: u32 = 3;
 
 #[tokio::main]
 async fn main() {
@@ -228,11 +229,42 @@ async fn run_session(
         .ok()
         .flatten()
         .and_then(|pr| pr.local_name)
-        .unwrap_or_else(|| "unknown device".to_string());
+        .unwrap_or_else(|| p.address().to_string());
 
     send(status(&source, "connecting", "", Some(&device_name), None));
-    if let Err(e) = p.connect().await {
-        send(status(&source, "error", &format!("connect failed: {e}"), None, None));
+    // Let the controller settle after scanning; connecting immediately after
+    // scan-stop is a common trigger for le-connection-abort-by-local on
+    // Intel adapters.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let mut connected = false;
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        if is_cancelled(&stop, my_gen) {
+            send(status(&source, "stopped", "user", None, None));
+            return;
+        }
+        match p.connect().await {
+            Ok(()) => {
+                connected = true;
+                break;
+            }
+            Err(e) if attempt < CONNECT_ATTEMPTS => {
+                send(status(
+                    &source,
+                    "connecting",
+                    &format!("retry {}/{} ({e})", attempt + 1, CONNECT_ATTEMPTS),
+                    Some(&device_name),
+                    None,
+                ));
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
+            Err(e) => {
+                send(status(&source, "error", &format!("connect failed after {CONNECT_ATTEMPTS} attempts: {e}"), None, None));
+                return;
+            }
+        }
+    }
+    if !connected {
         return;
     }
     if let Err(e) = p.discover_services().await {
