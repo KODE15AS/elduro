@@ -61,8 +61,7 @@
     {#if !available && num === 2}
       <div class="setup">
         <a href="/dl/elduro-capture.exe" download>Download the Windows agent</a>
-        and run it:
-        <code>elduro-capture.exe --backend ws://100.65.19.39:8094/ws/agent --agent lenovo</code>
+        and run it - double-click is enough, it connects to raven by itself.
       </div>
     {/if}
     <div class="readout">

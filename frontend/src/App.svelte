@@ -36,7 +36,8 @@
       case 'webbt':
         return 'webbt'
       case 'lenovo':
-        return ids.find((s) => s.startsWith('lenovo:')) ?? null
+        // Any non-raven agent (e.g. the laptop, whatever its hostname is).
+        return ids.find((s) => !s.startsWith('raven:')) ?? null
       case 'ravenInt':
         return ids.includes('raven:hci0') ? 'raven:hci0' : null
       case 'ravenUsb':

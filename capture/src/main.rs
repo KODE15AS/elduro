@@ -20,10 +20,25 @@ const RSSI_MIN_DBM: i16 = -85;
 /// How long to sample advertisement RSSI after the device is first seen.
 const RSSI_SAMPLE_S: u64 = 3;
 
+/// On Windows the exe is usually double-clicked on a laptop, so default to
+/// the raven backend over the tailnet. On raven itself the agent is started
+/// with explicit flags.
+#[cfg(windows)]
+const DEFAULT_BACKEND: &str = "ws://100.65.19.39:8094/ws/agent";
+#[cfg(not(windows))]
+const DEFAULT_BACKEND: &str = "ws://127.0.0.1:8094/ws/agent";
+
+fn default_agent_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .map(|h| h.to_lowercase())
+        .unwrap_or_else(|_| "agent".to_string())
+}
+
 #[tokio::main]
 async fn main() {
-    let mut backend_url = "ws://127.0.0.1:8094/ws/agent".to_string();
-    let mut agent_name = "raven".to_string();
+    let mut backend_url = DEFAULT_BACKEND.to_string();
+    let mut agent_name = default_agent_name();
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i + 1 < args.len() {
