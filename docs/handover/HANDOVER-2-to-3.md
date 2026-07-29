@@ -1,7 +1,9 @@
-# Elduro - Handover 2 -> 3 (WORKING DRAFT, accumulating during chat 2)
+# Elduro - Handover 2 -> 3
 
-At chat-2 close this replaces `HANDOVER.md`; archive the old 1->2 note. Until
-then this is the running record of decisions and the chat-3 backlog.
+Finalized at chat-2 close. Starting chat 3? Read this first, then the README.
+Previous increment: `HANDOVER-1-to-2.md` (kept in this folder for reference).
+Handover increments are immutable once superseded - never revise a past one,
+add a new `HANDOVER-N-to-M.md`.
 
 ## 1. New direction set in chat 2
 
