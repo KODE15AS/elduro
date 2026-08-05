@@ -45,14 +45,24 @@ docker run --rm --device=/dev/ttyACM0 -it -v "$FW":/project -w /project "$IDF" \
     idf.py -p /dev/ttyACM0 monitor
 ```
 
-## Current firmware
+## Current firmware (step 3b)
 
-Connects to the Polar H10, raises the ATT MTU, enables notifications on the PMD
-Data characteristic and indications on the PMD Control Point, writes the
-start-ECG command (130 Hz, 14-bit), and parses the incoming int24 microvolt
-samples, reporting an effective sample rate once per second. Verified on
-hardware at ~130 Hz.
+The full field bridge, driven from the browser:
 
-Next steps: capture ACC alongside ECG, add a PSRAM ring buffer, and forward
-frames over WiFi to the backend. microSD store-and-forward (FatFs) is deferred
-until the card arrives.
+- WiFi (iPhone hotspot) + secure WebSocket to `wss://elduro.no/ws/agent`;
+  registers as the source **ESP32 - Polar H10**.
+- BLE link to the Polar H10: raw ECG (130 Hz, int24 uV) + ACC (200 Hz, including
+  Polar's delta-compressed frames) + native heart-rate / RR (0x2A37).
+- Selecting the source and pressing RECORD / GO LIVE sends
+  `{"t":"start","mode":..}`; mode selects the streams: `ecg` = ECG+ACC,
+  `hrv` = ECG+ACC+HR, `hr` = HR only. Frames use the same JSON as the USB
+  capture agent, so the RAW ECG and RHYTHM/HRV views render them unchanged.
+- Amber status LED (GPIO21, active LOW): fast blink = offline (WiFi/WS down),
+  slow blink = online/idle, solid = streaming.
+
+WiFi credentials live in `main/wifi_creds.h` (gitignored); copy
+`main/wifi_creds.h.example` and fill in your SSID/password. The H10 needs a
+~5-35 s warm-up before it emits the first ECG/HR frame after start.
+
+Next steps: PSRAM ring buffer + microSD store-and-forward (FatFs), deferred
+until the card arrives; then a second H10 for the dual-sensor stage.

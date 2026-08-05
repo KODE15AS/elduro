@@ -1,0 +1,6 @@
+#pragma once
+// Copy this file to wifi_creds.h (gitignored) and fill in your network.
+// In the field this is the iPhone Personal Hotspot - enable "Maximize
+// Compatibility" so it broadcasts on 2.4 GHz for the ESP32-S3.
+#define WIFI_SSID "your-hotspot-name"
+#define WIFI_PASS "your-password"
