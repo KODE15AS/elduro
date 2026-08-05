@@ -1,0 +1,25 @@
+# Target
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash: 8 MB (matches eFuse readout on the XIAO ESP32-S3 Sense)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# PSRAM: 8 MB octal (ESP32-S3R8). The smoke test prints the detected size,
+# so if this board turns out to be quad, flip to CONFIG_SPIRAM_MODE_QUAD.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Console over native USB-Serial/JTAG: the XIAO has no external UART bridge,
+# so logs must go over the same /dev/ttyACM0 we flash on.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Bluetooth: NimBLE host (Polar H10 link)
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+
+# Larger single app partition to fit the BLE stack and leave room to grow
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
