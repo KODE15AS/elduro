@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import Lane from './lib/Lane.svelte'
   import EcgView from './lib/EcgView.svelte'
+  import HrvView from './lib/HrvView.svelte'
   import { computeMetrics, emptyLane } from './lib/metrics'
   import type { LaneData, EcgStreamMsg } from './lib/types'
 
@@ -18,7 +19,7 @@
   let activeLane: string | null = $state(null)
   let durationS = $state(60)
   let wsUp = $state(false)
-  let view: 'hr' | 'ecg' = $state('ecg')
+  let view: 'hr' | 'ecg' | 'hrv' = $state('ecg')
 
   // Phase 2 ECG plumbing: status per source and live-frame subscribers.
   let ecgStatus: Record<string, { state: string; detail: string; device: string }> = $state({})
@@ -105,6 +106,7 @@
       if (key) {
         lanes[key].samples.push({ t: m.ts, bpm: m.bpm, rr: m.rr ?? [] })
       }
+      for (const fn of ecgSubs) (fn as (x: any) => void)(m)
     }
   }
 
@@ -165,6 +167,9 @@
     <button class:active={view === 'ecg'} onclick={() => (view = 'ecg')}>
       RAW ECG
     </button>
+    <button class:active={view === 'hrv'} onclick={() => (view = 'hrv')}>
+      RHYTHM / HRV
+    </button>
   </div>
   <div class="controls">
     {#if view === 'hr'}
@@ -184,7 +189,7 @@
   </div>
 </header>
 
-{#if view === 'hr'}
+<div class="pane" style:display={view === 'hr' ? 'contents' : 'none'}>
   <main>
     {#each LANE_DEFS as d (d.key)}
       <Lane
@@ -198,14 +203,24 @@
       />
     {/each}
   </main>
-{:else}
+</div>
+<div class="pane" style:display={view === 'ecg' ? 'contents' : 'none'}>
   <EcgView
     sources={sources}
     send={sendCmd}
     register={registerEcg}
     onstatus={ecgStatusFor}
   />
-{/if}
+</div>
+<div class="pane" style:display={view === 'hrv' ? 'contents' : 'none'}>
+  <HrvView
+    src="/sample-hrv.json"
+    sources={sources}
+    send={sendCmd}
+    register={registerEcg}
+    onstatus={ecgStatusFor}
+  />
+</div>
 
 <style>
   header {
@@ -294,4 +309,3 @@
     box-sizing: border-box;
   }
 </style>
-
