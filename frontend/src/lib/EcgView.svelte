@@ -55,7 +55,8 @@
   function friendlyLabel(id: string): string {
     if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
     if (id.startsWith('raven:')) return 'Raven - ASUS BT-600 USB'
-    return `Lenovo - native agent (${id.split(':')[0]})`
+    if (id.startsWith('esp32-')) return 'ESP32 - Polar H10'
+    return `native agent (${id.split(':')[0]})`
   }
   function preferredSource(ids: string[]): string {
     return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''

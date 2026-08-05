@@ -25,7 +25,12 @@ struct AdapterInfo {
 struct AgentConn {
     tx: mpsc::UnboundedSender<String>,
     adapters: Vec<AdapterInfo>,
+    token: u64,
 }
+
+// Distinguishes successive connections that reuse the same agent id, so a
+// stale task cannot evict the newer reconnect that replaced it.
+static NEXT_AGENT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 struct AppState {
     ui_tx: broadcast::Sender<String>,
@@ -205,11 +210,12 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
     };
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<String>();
+    let my_token = NEXT_AGENT_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     state
         .agents
         .lock()
         .await
-        .insert(agent_id.clone(), AgentConn { tx: cmd_tx, adapters });
+        .insert(agent_id.clone(), AgentConn { tx: cmd_tx, adapters, token: my_token });
     state.broadcast_sources().await;
     println!("agent '{agent_id}' registered");
 
@@ -247,8 +253,20 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
         }
     }
 
-    state.agents.lock().await.remove(&agent_id);
-    state.broadcast_sources().await;
-    println!("agent '{agent_id}' disconnected");
+    let was_current = {
+        let mut agents = state.agents.lock().await;
+        if agents.get(&agent_id).map(|c| c.token) == Some(my_token) {
+            agents.remove(&agent_id);
+            true
+        } else {
+            false
+        }
+    };
+    if was_current {
+        state.broadcast_sources().await;
+        println!("agent '{agent_id}' disconnected");
+    } else {
+        println!("agent '{agent_id}' stale connection closed (newer kept)");
+    }
 }
 
