@@ -3,15 +3,17 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        State, WebSocketUpgrade,
+        Request, State, WebSocketUpgrade,
     },
-    response::IntoResponse,
+    http::{header, StatusCode},
+    response::{IntoResponse, Response},
     routing::any,
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, Mutex};
+use tower::ServiceExt;
 use tower_http::services::ServeDir;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -65,10 +67,35 @@ async fn main() {
         agents: Mutex::new(HashMap::new()),
     });
 
+    // Serve static assets; anything the file server does not find falls back
+    // to index.html with a real 200 so client-side deep links (e.g. /raw-ecg)
+    // load the SPA instead of a 404.
+    let spa_dir = static_dir.clone();
+    let spa = tower::service_fn(move |req: Request| {
+        let dir = spa_dir.clone();
+        async move {
+            let served = ServeDir::new(&dir).oneshot(req).await;
+            let res: Response = match served {
+                Ok(r) if r.status() != StatusCode::NOT_FOUND => r.into_response(),
+                _ => {
+                    let index = tokio::fs::read(format!("{dir}/index.html"))
+                        .await
+                        .unwrap_or_default();
+                    (
+                        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                        index,
+                    )
+                        .into_response()
+                }
+            };
+            Ok::<Response, std::convert::Infallible>(res)
+        }
+    });
+
     let app = Router::new()
         .route("/ws/ui", any(ui_ws))
         .route("/ws/agent", any(agent_ws))
-        .fallback_service(ServeDir::new(static_dir))
+        .fallback_service(spa)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))

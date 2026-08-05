@@ -3,8 +3,34 @@
   import Lane from './lib/Lane.svelte'
   import EcgView from './lib/EcgView.svelte'
   import HrvView from './lib/HrvView.svelte'
+  import Landing from './lib/Landing.svelte'
   import { computeMetrics, emptyLane } from './lib/metrics'
   import type { LaneData, EcgStreamMsg } from './lib/types'
+
+  // Path-based routing. The app stays a single persistent-mounted SPA; the
+  // route only selects which pane is visible, so live captures never tear down
+  // when navigating between tools.
+  type View = 'home' | 'hr' | 'ecg' | 'hrv'
+  const PATH_TO_VIEW: Record<string, View> = {
+    '/': 'home',
+    '/hr-compare': 'hr',
+    '/raw-ecg': 'ecg',
+    '/rhythm-hrv': 'hrv',
+  }
+  const VIEW_TO_PATH: Record<View, string> = {
+    home: '/',
+    hr: '/hr-compare',
+    ecg: '/raw-ecg',
+    hrv: '/rhythm-hrv',
+  }
+  function viewFromPath(): View {
+    return PATH_TO_VIEW[location.pathname] ?? 'home'
+  }
+  function go(v: View) {
+    view = v
+    const p = VIEW_TO_PATH[v]
+    if (location.pathname !== p) history.pushState({}, '', p)
+  }
 
   const LANE_DEFS = [
     { key: 'ravenUsb', num: 1, title: 'RAVEN - ASUS BT-600 USB' },
@@ -19,7 +45,7 @@
   let activeLane: string | null = $state(null)
   let durationS = $state(60)
   let wsUp = $state(false)
-  let view: 'hr' | 'ecg' | 'hrv' = $state('ecg')
+  let view: View = $state(viewFromPath())
 
   // Phase 2 ECG plumbing: status per source and live-frame subscribers.
   let ecgStatus: Record<string, { state: string; detail: string; device: string }> = $state({})
@@ -60,9 +86,14 @@
 
   onMount(() => {
     connectWs()
+    const onPop = () => {
+      view = viewFromPath()
+    }
+    window.addEventListener('popstate', onPop)
     return () => {
       closed = true
       ws?.close()
+      window.removeEventListener('popstate', onPop)
     }
   })
 
@@ -158,16 +189,26 @@
 </script>
 
 <header>
-  <div class="brand">ELDURO <span class="heart">&hearts;</span></div>
+  <div
+    class="brand"
+    role="button"
+    tabindex="0"
+    onclick={() => go('home')}
+    onkeydown={(e) => {
+      if (e.key === 'Enter' || e.key === ' ') go('home')
+    }}
+  >
+    ELDURO <span class="heart">&hearts;</span>
+  </div>
   <div class="subtitle">POLAR H10 SIGNAL LAB</div>
   <div class="tabs">
-    <button class:active={view === 'hr'} onclick={() => (view = 'hr')}>
+    <button class:active={view === 'hr'} onclick={() => go('hr')}>
       HR COMPARE
     </button>
-    <button class:active={view === 'ecg'} onclick={() => (view = 'ecg')}>
+    <button class:active={view === 'ecg'} onclick={() => go('ecg')}>
       RAW ECG
     </button>
-    <button class:active={view === 'hrv'} onclick={() => (view = 'hrv')}>
+    <button class:active={view === 'hrv'} onclick={() => go('hrv')}>
       RHYTHM / HRV
     </button>
   </div>
@@ -189,6 +230,9 @@
   </div>
 </header>
 
+<div class="pane" style:display={view === 'home' ? 'contents' : 'none'}>
+  <Landing onopen={go} />
+</div>
 <div class="pane" style:display={view === 'hr' ? 'contents' : 'none'}>
   <main>
     {#each LANE_DEFS as d (d.key)}
@@ -236,6 +280,7 @@
     font-family: var(--font-display);
     font-size: 30px;
     letter-spacing: 2px;
+    cursor: pointer;
   }
   .brand .heart {
     color: var(--color-heart);

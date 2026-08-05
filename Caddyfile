@@ -1,0 +1,9 @@
+{
+	email jorn@kode15.no
+}
+
+elduro.no, www.elduro.no {
+	encode gzip
+	# Backend serves the SPA (with index.html fallback) and the /ws/* upgrades.
+	reverse_proxy web:8080
+}
