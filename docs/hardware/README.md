@@ -6,21 +6,13 @@ recording losslessly to microSD, and streaming to raven via the iPhone's
 Personal Hotspot. The raven ASUS BT-600 setup remains the bench reference for
 verification.
 
-## Inventory (order 2026-07-29, Seeed Studio)
+## Inventory
 
-| Part | SKU | Price | Role |
-|---|---|---|---|
-| Seeed Studio XIAO ESP32-S3 Sense | 113991115 | $13.90 | Field unit MCU: BLE central to H10, WiFi uplink, microSD logging (on detachable daughter board) |
-| Seeed Studio XIAO ESP32-S3 | 113991114 | $7.49 | Bench/dev board and cold spare (no SD/camera) |
-| Grove Base for XIAO (battery management) | 103020312 | $3.90 | Battery holder base: JST battery connector, power switch, 400-500 mA charging, Grove ports (e.g. future L76K GNSS) |
-| 2.4GHz FPC Antenna A-02 | 318020968 | $0.50 | External U.FL antenna for better range to the phone |
+Full bill of materials - parts, SKUs, quantities, prices, order
+reconciliation and the locally-sourced items still needed - is in
+[komponentliste.md](komponentliste.md).
 
 Order record: [orders/2026-07-29-seeed-order-cart.jpg](orders/2026-07-29-seeed-order-cart.jpg)
-
-Still needed (sourced locally): 3.7 V LiPo 1000-2000 mAh with JST connector
-(verify polarity against the Grove Base marking before plugging in!), microSD
-card (32 GB or less, FAT32), 2.54 mm pin headers (14 solder joints to mount
-the XIAO on the Grove Base), enclosure.
 
 ## Datasheets
 
