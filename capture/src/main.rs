@@ -123,8 +123,13 @@ async fn run(url: &str, agent: &str) -> Result<(), Box<dyn Error>> {
             }
             _ = hotplug.tick() => {
                 let fresh = enumerate_adapters(&manager).await;
-                let old_ids: Vec<&String> = adapters.iter().map(|(id, _, _)| id).collect();
-                let new_ids: Vec<&String> = fresh.iter().map(|(id, _, _)| id).collect();
+                // Compare as a set: BlueZ keeps flipping the order of hci0/hci1,
+                // and an order-sensitive compare would re-register (and log) every
+                // tick, spamming the backend source list. Only real add/remove counts.
+                let mut old_ids: Vec<&String> = adapters.iter().map(|(id, _, _)| id).collect();
+                let mut new_ids: Vec<&String> = fresh.iter().map(|(id, _, _)| id).collect();
+                old_ids.sort();
+                new_ids.sort();
                 if old_ids != new_ids {
                     println!("adapters changed: {:?} -> {:?}", old_ids, new_ids);
                     adapters = fresh;
@@ -207,6 +212,29 @@ async fn run_session(
     };
 
     send(status(&source, "scanning", "looking for Polar H10", None, None));
+    let t_sess = Instant::now();
+    println!("[{source}] session start (mode={mode})");
+    // Handoff: a just-cancelled session may still hold the strap connected, and
+    // a connected H10 does not advertise, so a fresh scan would otherwise wait
+    // out the whole SCAN_TIMEOUT. Proactively drop any Polar still connected on
+    // this adapter so it re-advertises within a second or two.
+    if let Ok(existing) = adapter.peripherals().await {
+        for ep in existing {
+            let is_polar = ep
+                .properties()
+                .await
+                .ok()
+                .flatten()
+                .and_then(|pr| pr.local_name)
+                .map(|n| n.contains("Polar"))
+                .unwrap_or(false);
+            if is_polar && ep.is_connected().await.unwrap_or(false) {
+                println!("[{source}] dropping stale Polar link before scan");
+                let _ = ep.disconnect().await;
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+            }
+        }
+    }
     if let Err(e) = adapter
         .start_scan(ScanFilter {
             services: vec![HRS_UUID],
@@ -277,6 +305,7 @@ async fn run_session(
         tokio::time::sleep(Duration::from_millis(400)).await;
     }
     adapter.stop_scan().await.ok();
+    println!("[{source}] scan finished after {:?}, found={}", t_sess.elapsed(), found.is_some());
 
     let Some(p) = found else {
         send(status(
@@ -361,8 +390,9 @@ async fn run_session(
         None => None,
     };
 
-    if mode == "ecg" {
-        stream_pmd(&p, &source, &device_name, battery, duration_s, &out, &mut stop, my_gen).await;
+    if mode == "ecg" || mode == "hrv" {
+        println!("[{source}] streaming after {:?}", t_sess.elapsed());
+        stream_pmd(&p, &source, &device_name, battery, duration_s, mode == "hrv", &out, &mut stop, my_gen).await;
         p.disconnect().await.ok();
         return;
     }
@@ -394,8 +424,11 @@ async fn run_session(
 
     loop {
         tokio::select! {
-            _ = stop.changed() => {
-                if is_cancelled(&stop, my_gen) {
+            res = stop.changed() => {
+                // Err means the stop sender was dropped (backend reconnected while
+                // this session task was still alive). Treat that as cancellation so
+                // the orphaned task exits instead of busy-looping on a dead channel.
+                if res.is_err() || is_cancelled(&stop, my_gen) {
                     reason = "user";
                     break;
                 }
@@ -445,6 +478,7 @@ async fn stream_pmd(
     device_name: &str,
     battery: Option<u8>,
     duration_s: u64,
+    with_hr: bool,
     out: &mpsc::UnboundedSender<String>,
     stop: &mut watch::Receiver<u64>,
     my_gen: u64,
@@ -465,11 +499,22 @@ async fn stream_pmd(
 
     // Enable data notifications and control-point indications, then request
     // the ECG measurement start (required) and the ACC stream (best-effort).
+    let t_pmd = Instant::now();
+    // Wake the H10 into its "measuring" state first. The sensor gates the whole
+    // PMD data stream (ECG *and* ACC together) until it is measuring, and
+    // enabling the standard Heart Rate characteristic is what pushes it there.
+    // We subscribe for every mode (raw ECG included) purely to trigger this and
+    // only forward the HR frames downstream when they were actually requested.
+    if let Some(hrm) = p.characteristics().iter().find(|c| c.uuid == HRM_UUID).cloned() {
+        p.subscribe(&hrm).await.ok();
+        println!("[{source}] pmd: hrm subscribed at {:?}", t_pmd.elapsed());
+    }
     if let Err(e) = p.subscribe(&data_char).await {
         send(status(source, "error", &format!("PMD data subscribe failed: {e}"), None, None));
         return;
     }
     p.subscribe(&control).await.ok();
+    println!("[{source}] pmd: data+control subscribed at {:?}", t_pmd.elapsed());
     if let Err(e) = p
         .write(&control, &pmd::start_ecg_cmd(), WriteType::WithResponse)
         .await
@@ -482,6 +527,7 @@ async fn stream_pmd(
         .write(&control, &pmd::start_acc_cmd(), WriteType::WithResponse)
         .await
         .is_ok();
+    println!("[{source}] pmd: start commands written at {:?} (acc_on={acc_on})", t_pmd.elapsed());
 
     let mut notifications = match p.notifications().await {
         Ok(n) => n,
@@ -508,12 +554,16 @@ async fn stream_pmd(
     let mut acc_total: u64 = 0;
     let mut prev_ecg_ts: Option<u64> = None;
     let mut gaps: u64 = 0;
+    let mut first_frame_logged = false;
     let reason;
 
     loop {
         tokio::select! {
-            _ = stop.changed() => {
-                if is_cancelled(stop, my_gen) {
+            res = stop.changed() => {
+                // Err means the stop sender was dropped (backend reconnected while
+                // this session task was still alive). Treat that as cancellation so
+                // the orphaned task exits instead of busy-looping on a dead channel.
+                if res.is_err() || is_cancelled(stop, my_gen) {
                     reason = "user";
                     break;
                 }
@@ -524,8 +574,30 @@ async fn stream_pmd(
             }
             n = notifications.next() => {
                 let Some(data) = n else { reason = "disconnected"; break; };
+                if data.uuid == HRM_UUID {
+                    // HR is always subscribed to wake the sensor; only surface it
+                    // when the caller actually asked for it (hrv mode).
+                    if with_hr {
+                        let (bpm, rr) = parse_hr(&data.value);
+                        let host_unix_ns = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_nanos() as u64)
+                            .unwrap_or(0);
+                        send(serde_json::json!({
+                            "t": "hr", "source": source,
+                            "ts": started.elapsed().as_millis() as u64,
+                            "bpm": bpm, "rr": rr,
+                        }).to_string());
+                        recorder.write_hr(host_unix_ns, bpm, &rr);
+                    }
+                    continue;
+                }
                 if data.uuid != pmd::PMD_DATA || data.value.is_empty() {
                     continue;
+                }
+                if !first_frame_logged {
+                    first_frame_logged = true;
+                    println!("[{source}] pmd: FIRST data frame at {:?}", t_pmd.elapsed());
                 }
                 let host_unix_ns = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -653,6 +725,17 @@ impl PmdRecorder {
             "n": frame.samples_mg.len(),
             "mg": frame.samples_mg,
             "raw": raw_hex,
+        });
+        let _ = writeln!(writer, "{line}");
+    }
+
+    fn write_hr(&mut self, host_unix_ns: u64, bpm: u16, rr_ms: &[u32]) {
+        let Some(writer) = self.writer.as_mut() else { return };
+        let line = serde_json::json!({
+            "s": "hr",
+            "ts_host_ns": host_unix_ns,
+            "bpm": bpm,
+            "rr_ms": rr_ms,
         });
         let _ = writeln!(writer, "{line}");
     }
