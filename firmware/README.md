@@ -47,7 +47,12 @@ docker run --rm --device=/dev/ttyACM0 -it -v "$FW":/project -w /project "$IDF" \
 
 ## Current firmware
 
-Smoke test only: prints chip/flash/PSRAM, starts NimBLE, and passively scans
-for BLE advertisers, flagging any Polar H10 in range. Next steps: connect to the
-H10, subscribe to the PMD service (ECG 130 Hz + ACC), and stream frames over
-WiFi to the backend.
+Connects to the Polar H10, raises the ATT MTU, enables notifications on the PMD
+Data characteristic and indications on the PMD Control Point, writes the
+start-ECG command (130 Hz, 14-bit), and parses the incoming int24 microvolt
+samples, reporting an effective sample rate once per second. Verified on
+hardware at ~130 Hz.
+
+Next steps: capture ACC alongside ECG, add a PSRAM ring buffer, and forward
+frames over WiFi to the backend. microSD store-and-forward (FatFs) is deferred
+until the card arrives.
