@@ -53,11 +53,23 @@ VAT 0 % on the invoice (export to NO; import VAT handled separately).
   efficiency ~62 %, VSWR <= 4.5:1.
 - Flexible FPC with U.FL; fits XIAO ESP32-S3 (Sense).
 
+### LiPo battery, 1S 3.7 V 1000 mAh (sourced locally)
+- 1S LiPo, 3.7 V nominal, 1000 mAh, 17 g; 45 x 25 x 8 mm.
+- Discharge up to 25C continuous - far above the ESP32-S3's ~350 mA Wi-Fi/SD
+  write peaks, so no brown-out sag that could corrupt the SD filesystem.
+- White MX2.0 plug matching the 2.0 mm pitch (JST-PH 2.0) on the Grove Base
+  pads. VERIFY POLARITY against the Grove Base marking before the first plug-in.
+- Mounts with double-sided tape directly under or behind the Grove Base, so the
+  whole sensor unit stays compact and wearable.
+- Safety: charge only in a fire-safe place; the unit must cut off at >= 3.3 V
+  (a cell taken below 3.3 V is permanently ruined); storage voltage 3.8-3.9 V;
+  disconnect the battery during storage to avoid sneak drain.
+- Charge through the Grove Base (~400 mA), not the bare XIAO.
+- Source: modellflybutikken.no (3.7V 1000mAh 1S LiPo).
+
 ## Still needed (sourced locally)
 
-- 3.7 V LiPo, 1000-2000 mAh, JST-PH 2.0. VERIFY POLARITY against the Grove
-  Base marking before the first plug-in.
-- microSD card, <= 32 GB, formatted FAT32.
+- microSD card, <= 32 GB, formatted FAT32 (LiPo now specified above).
 - 2.54 mm pin headers (2x 7-pin) to solder the XIAO onto the Grove Base
   (14 joints).
 - Enclosure / strap mount for the chest-worn unit.
