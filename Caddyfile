@@ -1,9 +1,32 @@
 {
 	email jorn@kode15.no
+	on_demand_tls {
+		ask http://kontroll-server:3200/tls-sjekk
+	}
 }
 
 elduro.no, www.elduro.no {
 	encode gzip
 	# Backend serves the SPA (with index.html fallback) and the /ws/* upgrades.
 	reverse_proxy web:8080
+}
+
+# Klasserommet (KODE15, repo ~/dev/klasserommet): landingsside + klasse-/
+# elevdomener. Sertifikater utstedes on-demand per vertsnavn (HTTP-01) og
+# godkjennes av kontroll-serverens /tls-sjekk, slik at tilfeldige hostnavn
+# fra internett-skannere ikke brenner Let's Encrypt-kvoten.
+erbium.no, www.erbium.no {
+	encode gzip
+	tls {
+		on_demand
+	}
+	root * /srv/klasserommet-landing
+	file_server
+}
+
+*.erbium.no, *.*.erbium.no {
+	tls {
+		on_demand
+	}
+	reverse_proxy kontroll-server:3200
 }

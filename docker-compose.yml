@@ -17,10 +17,12 @@ services:
     labels:
       raven.project: "e-elduro"
 
-  # Public HTTPS front door for elduro.no. Binds only raven's LAN IP
-  # (10.5.0.22) because Tailscale already owns 100.65.19.39:443. The
-  # FortiGate 1:1-NATs 62.92.43.149:80/443 -> 10.5.0.22, so Let's Encrypt
-  # validation and normal traffic both reach Caddy here.
+  # Public HTTPS front door for elduro.no AND klasserommet (erbium.no).
+  # Binds only raven's LAN IP (10.5.0.22) because Tailscale already owns
+  # 100.65.19.39:443. The FortiGate 1:1-NATs 62.92.43.149:80/443 ->
+  # 10.5.0.22, so Let's Encrypt validation and normal traffic both reach
+  # Caddy here. Joined to the external "klasserommet" network to reach
+  # kontroll-server:3200 (ingress router + on-demand TLS ask endpoint).
   caddy:
     image: caddy:2-alpine
     depends_on:
@@ -30,8 +32,12 @@ services:
       - "10.5.0.22:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /home/cadify/dev/klasserommet/landing:/srv/klasserommet-landing:ro
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      - default
+      - klasserommet
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"
@@ -39,3 +45,8 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+
+networks:
+  klasserommet:
+    name: klasserommet
+    external: true
