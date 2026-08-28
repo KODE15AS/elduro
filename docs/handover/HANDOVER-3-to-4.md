@@ -150,3 +150,27 @@ Kubios cross-check.
   the `cadify` user is in `dialout`.
 - Still worth vendoring into `docs/hardware/`: the Espressif ESP32-S3 chip
   datasheet and the Polar PMD service spec from the Polar BLE SDK.
+
+## 8. Ingress decision 28.08.2026: Traefik replaces Caddy (Jørn)
+
+Jørn's decision: we are switching from **Caddy to Traefik** as the standard
+ingress, and Caddy will be phased out over time so we do not maintain too many
+parallel systems.
+
+State on raven as of 28.08: Caddy (`elduro-caddy-1`, bound to 10.5.0.22:80/443)
+is still the only ingress in production, fronting both elduro.no and the
+Klasserommet/erbium.no setup (on-demand TLS with the `ask` endpoint towards
+kontroll-server, landing-page mount, `klasserommet` docker network — commit
+`d903823`). Nothing has been torn down yet; changes to ingress still go in the
+`Caddyfile` until the migration happens.
+
+Migration notes for whoever does it:
+
+- The erbium.no **on-demand TLS** pattern is Caddy-specific. The Traefik
+  equivalent is a certResolver (HTTP-01 per host, or a DNS-01 wildcard once
+  the erbium.no zone is manageable at Deploi — see the Klasserommet handover,
+  testfunn 24).
+- elduro.no itself is a plain static-site + reverse-proxy block and is trivial
+  to port.
+- Coordinate the switch with the Klasserommet stage-4 hardening so the two
+  migrations happen together.
