@@ -11,11 +11,12 @@ elduro.no, www.elduro.no {
 	reverse_proxy web:8080
 }
 
-# Klasserommet (KODE15, repo ~/dev/klasserommet): landingsside + klasse-/
-# elevdomener. Sertifikater utstedes on-demand per vertsnavn (HTTP-01) og
-# godkjennes av kontroll-serverens /tls-sjekk, slik at tilfeldige hostnavn
-# fra internett-skannere ikke brenner Let's Encrypt-kvoten.
-erbium.no, www.erbium.no {
+# Studio 15 (KODE15, repo ~/dev/klasserommet): landingsside + klasse-/
+# prosjektdomener. Permanent domene studio15.cloud (beslutning 48, 31.08.2026).
+# Sertifikater utstedes on-demand per vertsnavn (HTTP-01) og godkjennes av
+# kontroll-serverens /tls-sjekk, slik at tilfeldige hostnavn fra
+# internett-skannere ikke brenner Let's Encrypt-kvoten.
+studio15.cloud, www.studio15.cloud {
 	encode gzip
 	tls {
 		on_demand
@@ -24,9 +25,17 @@ erbium.no, www.erbium.no {
 	file_server
 }
 
-*.erbium.no, *.*.erbium.no {
+*.studio15.cloud, *.*.studio15.cloud {
 	tls {
 		on_demand
 	}
 	reverse_proxy kontroll-server:3200
+}
+
+# Gammelt domene: permanent omdirigering til studio15.cloud
+erbium.no, www.erbium.no {
+	tls {
+		on_demand
+	}
+	redir https://studio15.cloud{uri} permanent
 }
