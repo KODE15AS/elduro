@@ -11,7 +11,7 @@ elduro.no, www.elduro.no {
 	reverse_proxy web:8080
 }
 
-# Studio 15 (KODE15, repo ~/dev/klasserommet): landingsside + klasse-/
+# Studio 15 (KODE15, repo ~/dev/studio15): landingsside + klasse-/
 # prosjektdomener. Permanent domene studio15.cloud (beslutning 48, 31.08.2026).
 # Sertifikater utstedes on-demand per vertsnavn (HTTP-01) og godkjennes av
 # kontroll-serverens /tls-sjekk, slik at tilfeldige hostnavn fra
@@ -21,7 +21,7 @@ studio15.cloud, www.studio15.cloud {
 	tls {
 		on_demand
 	}
-	root * /srv/klasserommet-landing
+	root * /srv/studio15-landing
 	file_server
 }
 
