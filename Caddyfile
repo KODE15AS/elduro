@@ -32,10 +32,14 @@ studio15.cloud, www.studio15.cloud {
 	reverse_proxy kontroll-server:3200
 }
 
-# Gammelt domene: permanent omdirigering til studio15.cloud
-erbium.no, www.erbium.no {
-	tls {
-		on_demand
-	}
-	redir https://studio15.cloud{uri} permanent
+# kode15 midlertidig paa erbium.no (repo KODE15AS/wordpress-kode15-no):
+# rot-domenet gaar rett til WordPress-containeren, www omdirigeres til rot.
+# Byttes til kode15.no naar domenet frigis.
+erbium.no {
+	encode gzip
+	reverse_proxy wordpress-kode15-no:80
+}
+
+www.erbium.no {
+	redir https://erbium.no{uri} permanent
 }

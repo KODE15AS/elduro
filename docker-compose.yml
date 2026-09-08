@@ -38,6 +38,7 @@ services:
     networks:
       - default
       - studio15
+      - wordpress-kode15
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"
@@ -49,4 +50,9 @@ volumes:
 networks:
   studio15:
     name: studio15
+    external: true
+  # WordPress for kode15 (repo KODE15AS/wordpress-kode15-no): Caddy naar
+  # containeren wordpress-kode15-no paa dette nettet.
+  wordpress-kode15:
+    name: wordpress-kode15-no_default
     external: true
