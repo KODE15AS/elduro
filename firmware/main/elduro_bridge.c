@@ -33,6 +33,7 @@
 #include "esp_mac.h"
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
+#include "esp_coexist.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 
@@ -72,6 +73,16 @@ static const uint8_t ACC_STOP_CMD[] = { 0x03, 0x02 };
 
 #define ECG_PERIOD_NS (1000000000ULL / 130)
 
+// Connection stability (chat-4 stabilization):
+//  * only hold the H10 while a session is wanted (frees the belt for the
+//    bench BT-600 when idle - the H10 accepts a single central)
+//  * refuse connect attempts below RSSI_MIN_DBM (same lesson as the raven
+//    agent's preflight from chat 1)
+//  * prefer BLE on the shared radio during connection establishment (the
+//    0x3E loop), balance again once the link is up
+//  * back off between failed attempts instead of hammering
+#define RSSI_MIN_DBM  (-85)
+
 typedef enum { MODE_ECG, MODE_HRV, MODE_HR } stream_mode_t;
 typedef enum { LED_OFFLINE, LED_ONLINE, LED_STREAM } led_state_t;
 
@@ -92,6 +103,10 @@ static volatile bool g_streaming = false;
 static volatile stream_mode_t g_mode = MODE_ECG;
 
 static QueueHandle_t s_tx_queue;
+
+static int s_ble_fails = 0;                 // consecutive failed connect rounds
+static esp_timer_handle_t s_rescan_timer;   // backoff before the next scan
+static esp_timer_handle_t s_start_retry_timer;  // retry PMD start writes
 
 static int64_t g_session_start_us = 0;
 static uint64_t g_ecg_total = 0;
@@ -132,6 +147,10 @@ static void enqueue(char *json)
 {
     if (!json) return;
     if (!g_ws_up || xQueueSend(s_tx_queue, &json, 0) != pdTRUE) {
+        static uint32_t dropped = 0;
+        if (++dropped % 100 == 1) {
+            ESP_LOGW(TAG, ">> frame dropped (#%" PRIu32 ", ws_up=%d)", dropped, g_ws_up);
+        }
         free(json);
     }
 }
@@ -150,6 +169,30 @@ static void ws_sender_task(void *arg)
     }
 }
 
+// Status for the UI (same shape as the USB agent). Deduplicated so the scan
+// loop cannot spam the browser.
+static void send_status(const char *state, const char *detail)
+{
+    static char last[64];
+    char key[64];
+    snprintf(key, sizeof(key), "%s|%s", state, detail ? detail : "");
+    if (strcmp(key, last) == 0) return;
+    strncpy(last, key, sizeof(last) - 1);
+
+    char *out = malloc(224);
+    if (!out) return;
+    if (detail && detail[0]) {
+        snprintf(out, 224,
+            "{\"t\":\"status\",\"source\":\"%s\",\"state\":\"%s\",\"detail\":\"%s\"}",
+            s_source, state, detail);
+    } else {
+        snprintf(out, 224,
+            "{\"t\":\"status\",\"source\":\"%s\",\"state\":\"%s\"}",
+            s_source, state);
+    }
+    enqueue(out);
+}
+
 // ---- PMD / HR control ------------------------------------------------------
 
 static void hr_enable(bool on)
@@ -159,27 +202,75 @@ static void hr_enable(bool on)
     ble_gattc_write_flat(g_conn, g_hr_val + 1, v, sizeof(v), NULL, NULL);
 }
 
+// GATT allows one client procedure at a time, so the PMD start sequence is a
+// callback chain: ECG start -> ack -> ACC start -> ack -> (HR subscribe) ->
+// declare streaming. A rejected write schedules a retry instead of silently
+// leaving the belt armed-but-mute (the chat-4 "empty stream" bug).
+static void mark_streaming(void)
+{
+    g_streaming = true;
+    led_refresh();
+    ESP_LOGI(TAG, ">> streaming (mode=%d)", g_mode);
+    send_status("streaming",
+                g_mode == MODE_HR ? "HR" : (g_mode == MODE_HRV ? "ECG+ACC+HR" : "ECG+ACC"));
+}
+
+static void retry_start_later(const char *what, int rc)
+{
+    ESP_LOGW(TAG, ">> %s failed rc=%d; retrying in 300 ms", what, rc);
+    esp_timer_stop(s_start_retry_timer);
+    esp_timer_start_once(s_start_retry_timer, 300000);
+}
+
+static int on_acc_started(uint16_t ch, const struct ble_gatt_error *err,
+                          struct ble_gatt_attr *attr, void *arg)
+{
+    ESP_LOGI(TAG, ">> PMD ACC start ack status=%d", err->status);
+    if (err->status != 0) { retry_start_later("ACC start (ack)", err->status); return 0; }
+    if (g_mode == MODE_HRV) hr_enable(true);
+    mark_streaming();
+    return 0;
+}
+
+static int on_ecg_started(uint16_t ch, const struct ble_gatt_error *err,
+                          struct ble_gatt_attr *attr, void *arg)
+{
+    ESP_LOGI(TAG, ">> PMD ECG start ack status=%d", err->status);
+    if (err->status != 0) { retry_start_later("ECG start (ack)", err->status); return 0; }
+    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_START_CMD,
+                                  sizeof(ACC_START_CMD), on_acc_started, NULL);
+    if (rc != 0) retry_start_later("ACC start (write)", rc);
+    return 0;
+}
+
 static void start_measurements(void)
 {
-    if (g_streaming || !g_ble_ready) return;
+    if (g_streaming || !g_ble_ready) {
+        ESP_LOGW(TAG, ">> start ignored (streaming=%d ready=%d)", g_streaming, g_ble_ready);
+        return;
+    }
     g_session_start_us = esp_timer_get_time();
     g_ecg_total = g_acc_total = 0;
     g_gaps = 0;
     g_have_prev_ecg = false;
-    bool want_ecg = (g_mode == MODE_ECG || g_mode == MODE_HRV);
-    bool want_hr  = (g_mode == MODE_HRV || g_mode == MODE_HR);
-    if (want_ecg) {
-        ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_START_CMD, sizeof(ECG_START_CMD), NULL, NULL);
-        ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_START_CMD, sizeof(ACC_START_CMD), NULL, NULL);
+    if (g_mode == MODE_HR) {
+        hr_enable(true);
+        mark_streaming();
+        return;
     }
-    if (want_hr) hr_enable(true);
-    g_streaming = true;
-    led_refresh();
-    ESP_LOGI(TAG, ">> streaming (mode=%d ecg=%d hr=%d)", g_mode, want_ecg, want_hr);
+    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_START_CMD,
+                                  sizeof(ECG_START_CMD), on_ecg_started, NULL);
+    if (rc != 0) retry_start_later("ECG start (write)", rc);
+}
+
+static void start_retry_cb(void *arg)
+{
+    if (g_want_stream && g_ble_ready && !g_streaming) start_measurements();
 }
 
 static void stop_measurements(void)
 {
+    esp_timer_stop(s_start_retry_timer);
     if (g_ble_ready && g_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_STOP_CMD, sizeof(ECG_STOP_CMD), NULL, NULL);
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_STOP_CMD, sizeof(ACC_STOP_CMD), NULL, NULL);
@@ -203,6 +294,9 @@ static void send_register(void)
     ESP_LOGI(TAG, "registered as %s", s_agent_id);
 }
 
+static void ble_connect_wanted(void);  // hunt the belt (session wanted)
+static void ble_release(void);         // drop / stop hunting the belt (idle)
+
 static void handle_command(const char *data, int len)
 {
     if (strnstr(data, "\"t\":\"start\"", len)) {
@@ -211,11 +305,14 @@ static void handle_command(const char *data, int len)
         else g_mode = MODE_ECG;
         ESP_LOGI(TAG, "cmd: start (mode=%d)", g_mode);
         g_want_stream = true;
+        s_ble_fails = 0;
         if (g_ble_ready) start_measurements();
+        else ble_connect_wanted();
     } else if (strnstr(data, "\"t\":\"stop\"", len)) {
         ESP_LOGI(TAG, "cmd: stop");
         g_want_stream = false;
         stop_measurements();
+        ble_release();
     }
 }
 
@@ -428,13 +525,48 @@ static void emit_hr(const uint8_t *d, int len)
 
 static int gap_event(struct ble_gap_event *event, void *arg);
 
+// Scan only while a session is wanted; an idle bridge must not hold (or hunt)
+// the belt, so the bench BT-600 can use it.
 static void start_scan(void)
 {
+    if (!g_want_stream || g_conn != BLE_HS_CONN_HANDLE_NONE) return;
+    if (ble_gap_disc_active()) return;
     uint8_t own;
     if (ble_hs_id_infer_auto(0, &own) != 0) return;
-    struct ble_gap_disc_params disc = { .passive = 0, .filter_duplicates = 1 };
+    // No duplicate filtering: a belt first seen too weak must be re-reported
+    // when it comes back in range.
+    struct ble_gap_disc_params disc = { .passive = 0, .filter_duplicates = 0 };
     ble_gap_disc(own, BLE_HS_FOREVER, &disc, gap_event, NULL);
     ESP_LOGI(TAG, "scanning for Polar H10 (wear the strap)");
+    send_status("scanning", "looking for Polar H10");
+}
+
+// Back off between failed connect rounds: 0.3 s the first time, +0.7 s per
+// consecutive failure, capped at ~3.8 s.
+static void rescan_cb(void *arg) { start_scan(); }
+
+static void schedule_scan(void)
+{
+    int fails = s_ble_fails > 5 ? 5 : s_ble_fails;
+    esp_timer_stop(s_rescan_timer);
+    esp_timer_start_once(s_rescan_timer, 300000ULL + (uint64_t)fails * 700000ULL);
+}
+
+static void ble_connect_wanted(void)
+{
+    start_scan();
+}
+
+static void ble_release(void)
+{
+    esp_timer_stop(s_rescan_timer);
+    if (ble_gap_disc_active()) ble_gap_disc_cancel();
+    ble_gap_conn_cancel();  // abort an in-flight connect (no-op otherwise)
+    if (g_conn != BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGI(TAG, ">> releasing H10 (idle)");
+        ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    send_status("stopped", "user");
 }
 
 static int on_hrm_disc(uint16_t ch, const struct ble_gatt_error *err,
@@ -446,8 +578,13 @@ static int on_hrm_disc(uint16_t ch, const struct ble_gatt_error *err,
         // BLE_HS_EDONE (or error): discovery finished; arm the link.
         g_ble_ready = true;
         ESP_LOGI(TAG, ">> H10 armed (hr_val=0x%04x); %s",
-                 g_hr_val, g_want_stream ? "starting" : "idle");
-        if (g_want_stream) start_measurements();
+                 g_hr_val, g_want_stream ? "starting" : "releasing (idle)");
+        if (g_want_stream) {
+            start_measurements();
+        } else if (g_conn != BLE_HS_CONN_HANDLE_NONE) {
+            // Session was cancelled while we connected: free the belt.
+            ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+        }
     }
     return 0;
 }
@@ -490,39 +627,91 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             memcpy(name, f.name, n);
         }
         if (strstr(name, "Polar")) {
-            ESP_LOGI(TAG, ">> found '%s', connecting", name);
+            if (!g_want_stream) return 0;  // idle: leave the belt alone
+            if (event->disc.rssi < RSSI_MIN_DBM) {
+                // Too weak to survive connect establishment under coex.
+                // Throttle: adverts arrive several times a second.
+                static int64_t last_weak_us = 0;
+                int64_t now = esp_timer_get_time();
+                if (now - last_weak_us > 2000000) {
+                    last_weak_us = now;
+                    ESP_LOGW(TAG, ">> '%s' too weak (RSSI %d dBm, needs %d)",
+                             name, event->disc.rssi, RSSI_MIN_DBM);
+                    char d[80];
+                    snprintf(d, sizeof(d), "signal too weak (RSSI %d dBm, needs %d or better)",
+                             event->disc.rssi, RSSI_MIN_DBM);
+                    send_status("scanning", d);
+                }
+                return 0;  // keep scanning; it may come closer
+            }
+            ESP_LOGI(TAG, ">> found '%s' (RSSI %d dBm), connecting",
+                     name, event->disc.rssi);
+            {
+                char d[48];
+                snprintf(d, sizeof(d), "RSSI %d dBm", event->disc.rssi);
+                send_status("connecting", d);
+            }
             ble_gap_disc_cancel();
+            // Give BLE the radio while the link is established - connect
+            // anchors were being lost to WiFi (the 0x3E reattempt loop).
+            esp_coex_preference_set(ESP_COEX_PREFER_BT);
             uint8_t own;
             ble_hs_id_infer_auto(0, &own);
-            if (ble_gap_connect(own, &event->disc.addr, 30000, NULL, gap_event, NULL) != 0)
-                start_scan();
+            // Wide initiation scan + 6 s supervision timeout so the link
+            // survives short radio stalls once it is up. ce_len keeps the
+            // NimBLE defaults: it reserves per-event airtime for BLE, which
+            // under WiFi coex is what keeps the notification stream alive.
+            struct ble_gap_conn_params cp = {
+                .scan_itvl = 0x0060, .scan_window = 0x0060,
+                .itvl_min = 24, .itvl_max = 40,
+                .latency = 0, .supervision_timeout = 600,
+                .min_ce_len = 0x0010, .max_ce_len = 0x0300,
+            };
+            if (ble_gap_connect(own, &event->disc.addr, 30000, &cp, gap_event, NULL) != 0) {
+                esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+                s_ble_fails++;
+                schedule_scan();
+            }
         }
         return 0;
     }
     case BLE_GAP_EVENT_CONNECT:
+        esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
         if (event->connect.status == 0) {
+            s_ble_fails = 0;
             g_conn = event->connect.conn_handle;
             ESP_LOGI(TAG, ">> H10 connected; raising MTU");
             ble_gattc_exchange_mtu(g_conn, on_mtu, NULL);
         } else {
-            start_scan();
+            s_ble_fails++;
+            schedule_scan();
         }
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGW(TAG, "H10 disconnected reason=%d", event->disconnect.reason);
+        esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+        if (event->disconnect.reason == BLE_HS_HCI_ERR(0x3e)) s_ble_fails++;
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_hr_val = 0;
         g_ble_ready = false;
+        if (g_streaming) send_status("error", "H10 link lost");
         g_streaming = false;
         led_refresh();
-        start_scan();
+        if (g_want_stream) schedule_scan();
         return 0;
     case BLE_GAP_EVENT_NOTIFY_RX: {
         uint16_t h = event->notify_rx.attr_handle;
         uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
         static uint8_t buf[512];
+        static uint32_t n_rx = 0;
         if (len > sizeof(buf)) len = sizeof(buf);
         ble_hs_mbuf_to_flat(event->notify_rx.om, buf, len, NULL);
+        // Diagnostics: first notification and every 500th, so a silent belt
+        // is distinguishable from a broken forward path.
+        if (n_rx++ == 0 || n_rx % 500 == 0) {
+            ESP_LOGI(TAG, ">> notify #%" PRIu32 " handle=0x%04x len=%u first=0x%02x",
+                     n_rx, h, len, len ? buf[0] : 0);
+        }
         if (h == PMD_DATA_VAL && len >= 1) {
             if (buf[0] == 0x00) emit_ecg(buf, len);
             else if (buf[0] == 0x02) emit_acc(buf, len);
@@ -600,6 +789,17 @@ void app_main(void)
     ESP_LOGI(TAG, "elduro field bridge - step 3b: H10 (ECG+ACC+HR) -> WiFi/WS");
 
     s_tx_queue = xQueueCreate(48, sizeof(char *));
+
+    const esp_timer_create_args_t rescan_args = {
+        .callback = rescan_cb, .name = "ble_rescan",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&rescan_args, &s_rescan_timer));
+
+    const esp_timer_create_args_t retry_args = {
+        .callback = start_retry_cb, .name = "pmd_retry",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&retry_args, &s_start_retry_timer));
+
     xTaskCreate(led_task, "led", 4096, NULL, 4, NULL);
     xTaskCreate(ws_sender_task, "wstx", 8192, NULL, 6, NULL);
     xTaskCreate(net_task, "net", 8192, NULL, 5, NULL);

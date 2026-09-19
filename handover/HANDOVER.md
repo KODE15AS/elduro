@@ -23,6 +23,29 @@ tillegg i denne katalogen (se Historikk nederst).
   (schema_version 2). `recordings/*.jsonl` på disk er fortsatt v1 og skal
   migreres.
 
+## Pågående (chat 4): feltbro-stabilisering
+
+Status 19.09.2026 (benk-økt, se firmware-commit for detaljer):
+
+- [x] **Firmware stabilisert og verifisert** (EKG 131,6 / ACC 203,2 samples/s
+  uten linktap): slipper beltet i idle (ingen kamp med BT-600), RSSI-terskel
+  −85 dBm med backoff og live status til UI-et, coex-preferanse BLE under
+  tilkobling, 6 s supervision timeout, PMD-start som GATT-kjede med
+  kvittering/retry (fikser «streaming uten data»), diagnostikk på notify/drop.
+- [x] Begge stier re-verifisert som i chat 3: BT-600 (benk) og ESP32-bro,
+  inkl. nativ HR/RR i hrv-modus. H10-batteri på gammelt belte målt til 30 % –
+  byttet til nytt belte («Polar H10 1DA2053E», navnesøket fungerer på tvers).
+- [ ] **Åpent: svakt radiomiljø ved raven** – RSSI −83 til −88 på 2 m (normalt
+  ~−60). Sjekk U.FL-antennen på XIAO-en; mistenk USB3-støy/kabinett. Irrelevant
+  i felt (bro på kroppen), men merkbart på benk.
+- [ ] **Åpent: backend-arbitrering** «nyeste start vinner» per enhet, så to
+  faner/kilder ikke kan sloss om beltet (sett i praksis 19.09).
+- [ ] Siste hrv-verifisering etter antennesjekk, så vanlig backlog under.
+
+Driftsregler på benk: én fane styrer start/stopp; hotspoten må stå på med
+skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
+(broen holder ikke beltet lenger i idle).
+
 ## Gjenstående (prioritert backlog)
 
 - [ ] **microSD store-and-forward (FatFs)** – største gjenstående
