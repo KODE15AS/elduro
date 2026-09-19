@@ -35,9 +35,12 @@ Status 19.09.2026 (benk-økt, se firmware-commit for detaljer):
 - [x] Begge stier re-verifisert som i chat 3: BT-600 (benk) og ESP32-bro,
   inkl. nativ HR/RR i hrv-modus. H10-batteri på gammelt belte målt til 30 % –
   byttet til nytt belte («Polar H10 1DA2053E», navnesøket fungerer på tvers).
-- [ ] **Åpent: svakt radiomiljø ved raven** – RSSI −83 til −88 på 2 m (normalt
-  ~−60). Sjekk U.FL-antennen på XIAO-en; mistenk USB3-støy/kabinett. Irrelevant
-  i felt (bro på kroppen), men merkbart på benk.
+- [ ] **Åpent: svakt radiomiljø – hovedhypotese: antennen er ikke montert.**
+  Avdekket 19.09: den medfølgende U.FL-antennen til XIAO-en er ikke påsatt, og
+  den betjener BÅDE WiFi og BLE (én delt 2,4 GHz-radio). Forklarer RSSI
+  −70/−80 dBm på 10 cm/2 m (mangler 30–40 dB), 0x3E-stormene, supervision
+  timeouts og ustabil WSS. Første punkt neste økt: klikk antennen på
+  U.FL-kontakten og re-verifiser (forvent ~20–30 dB løft).
 - [ ] **Åpent: backend-arbitrering** «nyeste start vinner» per enhet, så to
   faner/kilder ikke kan sloss om beltet (sett i praksis 19.09).
 - [ ] Siste hrv-verifisering etter antennesjekk, så vanlig backlog under.
