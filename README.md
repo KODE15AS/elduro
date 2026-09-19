@@ -10,12 +10,24 @@ Runs as a Docker container on **raven**. **Web UI:** https://elduro.no
 (public, HTTPS via Caddy). The Tailscale URL
 (https://cadify104raven.tail14de1b.ts.net:8443) still works on the tailnet.
 
+## Lenker
+
+| Hva | Tilgang | URL |
+|---|---|---|
+| Web-UI (elduro.no) | 🌐 Offentlig | https://elduro.no |
+| Web-UI via Tailscale | 🔒 Kun Tailscale | https://cadify104raven.tail14de1b.ts.net:8443 |
+| Dette repoet på GitHub | 🌐 Offentlig (krever innlogging) | https://github.com/KODE15AS/elduro |
+
+🌐 Offentlig — kan nås fra internett. 🔒 Kun Tailscale — kun internt.
+
 ## Start here (project map)
 
 This README is the entry point for tracking the whole project.
 
-- **What to do next / current state:** [HANDOVER.md](./HANDOVER.md) - the
-  handover index; its CURRENT link is where an new chat should begin.
+- **What to do next / current state:** [handover/HANDOVER.md](./handover/HANDOVER.md) -
+  the living handover; this is where a new chat should begin.
+- **How we work (agents):** [AGENTS.md](./AGENTS.md) - RAVEN norms pointer plus
+  repo-specific warnings.
 - **Data contract (frozen):** [docs/format/frame-schema.md](./docs/format/frame-schema.md) -
   frame identity, timestamps, labels, and the two-tier archive model.
 - **Field hardware:** [docs/hardware/README.md](./docs/hardware/README.md) -
@@ -128,4 +140,4 @@ no local git on the Windows laptop.
 The raw capture feeds later research: full EKG reconstruction, AV block
 detection, inverted T-wave detection (including dual-H10 setups), and
 HRV/RMSSD analysis for a myocardial-bridge (vagal) case. Method, libraries and
-caveats are in the current handover (see [HANDOVER.md](./HANDOVER.md)).
+caveats are in the current handover (see [handover/HANDOVER.md](./handover/HANDOVER.md)).
