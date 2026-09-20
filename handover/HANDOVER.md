@@ -106,11 +106,11 @@ og pensjonert. Mulig bidrag: ukene med antenneløs drift (PA-mismatch).
   Gjenstår: v1-migrering av `recordings/` (3,9 GB) og SD-spill-opplasting.
   Kjent v1-forbehold: device_id = source til belteidentitet følger rammene.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
-- [x] **Ekte veggklokke på ESP32 (SNTP) – levert 20.09:** `pool.ntp.org` etter
-  IP; `ts_host_ns` bytter fra monoton oppetid til Unix-ns først ved bekreftet
-  synk (aldri 1970 i arkivet); SD-header + telemetri får `clock`-felt; vises i
-  TILKOBLING-fanen. Firmware bygget og committet; **flash venter til ESP32 er
-  tilbake på USB** (var frakoblet ved slutten av økta).
+- [x] **Ekte veggklokke på ESP32 (SNTP) – levert og VERIFISERT 20.09:**
+  `pool.ntp.org` etter IP; `ts_host_ns` bytter fra monoton oppetid til Unix-ns
+  først ved bekreftet synk (aldri 1970 i arkivet); SD-header + telemetri får
+  `clock`-felt; vises i TILKOBLING-fanen. Flashet 20.09 kveld, telemetri
+  bekreftet `clock=ntp-synced`.
 - [x] **RAW ACC skilt ut i egen fane (20.09):** RAW ECG beholder klinisk
   strimmelhøyde så to EKG-strimler kan stables når H10 nr. 2 kommer.
 - [ ] **Syntetisk EKG fra to H10 (planlagt):**
@@ -184,6 +184,16 @@ gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
   `esp_restart()` når broen er vranglåst (ingen skann/connect tross ønsket
   strøm etter 3 kick, eller vedvarende 531-avvisning) – trygt fordi backend
   gjensender START. Erstatter behovet for manuell ESP-reboot etter 531-storm.
+
+**ÅPENT belte-problem (20.09 kveld) – H10 nr. 1 mistenkt defekt:** dropper
+EKG+ACC ~20–30 s inn i strømmen (`reason=531`), mens HR alene fortsetter.
+Batteribytte hjalp IKKE – fersk celle leste fortsatt 18 % under last (skulle
+vært ~100 %), og beltet droppet likevel → avkrefter batteri som eneste årsak,
+peker mot belte-elektronikkfeil. RSSI sterkt (−43…−54), så ikke rekkevidde;
+ESP32 + firmware oppfører seg korrekt (selvhelbredelse + backoff + tydelig
+UI-melding). **Plan i morgen: test H10 nr. 2 (nytt belte).** Nr. 2 stabil →
+nr. 1 defekt; nr. 2 dropper også → felles-oppsett-feil. Det nye UI-et (RAW ACC-
+fane m.m.) er OK – «nytt oppsett» refererte kun til UI, ingen maskinvareendring.
 
 Vurdering 20.09 – **USB-lagring / SSD-powerbank-idé:**
 [docs/hardware/usb-lagring-vurdering.md](../docs/hardware/usb-lagring-vurdering.md).
