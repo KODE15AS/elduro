@@ -209,6 +209,10 @@ static void hr_enable(bool on)
 static void mark_streaming(void)
 {
     g_streaming = true;
+    // Keep BLE preferred while the PMD notification stream runs: the H10
+    // hangs up (reason 531) if its notifications stall under coex, and the
+    // WS forward only needs ~10 kB/s, which survives low WiFi priority.
+    esp_coex_preference_set(ESP_COEX_PREFER_BT);
     led_refresh();
     ESP_LOGI(TAG, ">> streaming (mode=%d)", g_mode);
     send_status("streaming",
@@ -271,6 +275,7 @@ static void start_retry_cb(void *arg)
 static void stop_measurements(void)
 {
     esp_timer_stop(s_start_retry_timer);
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     if (g_ble_ready && g_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_STOP_CMD, sizeof(ECG_STOP_CMD), NULL, NULL);
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_STOP_CMD, sizeof(ACC_STOP_CMD), NULL, NULL);
@@ -680,6 +685,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status == 0) {
             s_ble_fails = 0;
             g_conn = event->connect.conn_handle;
+            // Fresh link: no stream survives a reconnect, so clear any stale
+            // streaming state (seen 20.09: "start ignored (streaming=1)"
+            // after the belt wedged mid-GATT and the link was re-established).
+            g_streaming = false;
+            led_refresh();
             ESP_LOGI(TAG, ">> H10 connected; raising MTU");
             ble_gattc_exchange_mtu(g_conn, on_mtu, NULL);
         } else {
