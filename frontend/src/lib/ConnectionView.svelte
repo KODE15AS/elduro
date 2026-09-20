@@ -265,6 +265,7 @@
                 <tr><td>Chip-temp</td><td class:warn={tm.chip_c > 75}>{tm.chip_c > 0 ? tm.chip_c.toFixed(0) + ' °C' : '-'}</td></tr>
                 <tr><td>Fritt minne</td><td>{tm.heap_kb} kB</td></tr>
                 <tr><td>microSD</td><td>{tm.sd ? 'montert (spill aktiv)' : 'ikke montert'}</td></tr>
+                <tr><td>Klokke</td><td>{tm.clock === 'ntp-synced' ? 'NTP-synket (ekte tid)' : tm.clock === 'unsynced' ? 'usynket (oppetid)' : '-'}</td></tr>
                 <tr><td>Oppetid</td><td>{Math.floor(tm.uptime_s / 60)} min</td></tr>
               </tbody>
             </table>

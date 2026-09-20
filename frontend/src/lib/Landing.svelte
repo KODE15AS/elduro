@@ -1,5 +1,5 @@
 <script lang="ts">
-  type View = 'home' | 'conn' | 'ecg' | 'hrv'
+  type View = 'home' | 'conn' | 'ecg' | 'acc' | 'hrv'
   let { onopen }: { onopen: (v: View) => void } = $props()
 
   const tools: { view: View; title: string; desc: string }[] = [
@@ -11,7 +11,12 @@
     {
       view: 'ecg',
       title: 'RAW ECG',
-      desc: 'Clinical-scope 130 Hz ECG with beat detection and accelerometer.',
+      desc: 'Clinical-scope 130 Hz ECG with beat detection.',
+    },
+    {
+      view: 'acc',
+      title: 'RAW ACC',
+      desc: '3-akse akselerometer, 200 Hz, på EKG-tidslinjen.',
     },
     {
       view: 'hrv',

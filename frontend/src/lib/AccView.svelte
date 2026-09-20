@@ -3,6 +3,10 @@
   import type { EcgStreamMsg } from './types'
   import { EcgScope } from './ecgScope'
 
+  // RAW ACC (20.09.2026): ACC-skopet flyttet ut av RAW ECG for å gjøre plass
+  // til to EKG-strimler (dual-H10). Bruker sin egen EcgScope-instans som
+  // inntar EKG-rammer KUN for klokkeanker (host<->elapsed-offset) og motor;
+  // selve EKG-kurven tegnes ikke her.
   interface Props {
     sources: Record<string, string>
     send: (cmd: object) => void
@@ -11,27 +15,28 @@
   }
   let { sources, send, register, onstatus }: Props = $props()
 
-  const ECG_FS = 130
-  const SPEEDS = [25, 50] // mm/s selectable
-  // ACC ble flyttet til egen RAW ACC-fane 20.09.2026 for å gjøre plass til to
-  // EKG-strimler over hverandre når H10 nr. 2 kommer (dual-H10).
+  const ACC_FS = 200
+  const BUF_S = 60
+  const SPEEDS = [25, 50]
 
-  // Shared clinical-ECG engine: the RHYTHM/HRV tab runs this same code, so the
-  // live ECG signal path (baseline, detection, motor, drawing) is identical.
   const scope = new EcgScope()
 
-  // Øktstyring bor på TILKOBLING-fanen (20.09.2026); denne visningen følger
-  // aktiv strøm for valgt kilde og har kun visningskontroller (pause, fart).
   let selected = $state('')
-  let streamingSince = 0 // når status ble 'streaming', for oppvarmings-overlay
+  let streamingSince = 0
   let paused = $state(false)
   let speed = $state(25)
-  let ecgTotal = $state(0)
-  let gaps = $state(0)
-  let deviceTimeS = $state(0)
+  let accTotal = $state(0)
   let ecgFresh = $state(false)
-  let hrBpm = $state<number | null>(null)
-  let ecgCanvas: HTMLCanvasElement | undefined = $state()
+  let accCanvas: HTMLCanvasElement | undefined = $state()
+
+  const accCap = ACC_FS * BUF_S
+  let accX = new Float32Array(accCap)
+  let accY = new Float32Array(accCap)
+  let accZ = new Float32Array(accCap)
+  let accT = new Float64Array(accCap)
+  let accHead = 0
+  let accFilled = 0
+  let accLastT = -Infinity
 
   const sourceIds = $derived(Object.keys(sources))
   const status = $derived(selected ? onstatus(selected) : null)
@@ -56,10 +61,29 @@
     register((m: EcgStreamMsg) => {
       if (m.source !== selected) return
       if (m.t === 'ecg') {
+        // Kun klokkeanker + motor; kurven vises i RAW ECG-fanen.
         scope.ingestEcg(m)
-        ecgTotal = scope.ecgTotal
-        gaps = scope.gaps
-        deviceTimeS = scope.deviceTimeS
+      } else if (m.t === 'acc') {
+        const E = scope.elapsedOf(m)
+        if (Number.isNaN(scope.hostElapsedOffset)) return
+        const s = m.samples as number[][]
+        if (!s.length) return
+        const base = E - (s.length - 1) / ACC_FS
+        let shift = 0
+        if (accLastT > -Infinity) {
+          const overlap = accLastT + 1 / ACC_FS - base
+          if (overlap > 0 && overlap < 0.5) shift = overlap
+        }
+        for (let i = 0; i < s.length; i++) {
+          accX[accHead] = s[i][0]
+          accY[accHead] = s[i][1]
+          accZ[accHead] = s[i][2]
+          accT[accHead] = base + i / ACC_FS + shift
+          accHead = (accHead + 1) % accCap
+          if (accFilled < accCap) accFilled++
+        }
+        accLastT = base + (s.length - 1) / ACC_FS + shift
+        accTotal = m.total
       }
     })
     let raf = 0
@@ -68,11 +92,8 @@
       ecgFresh = perf - scope.lastEcgMs < 1500
       if (live && !streamingSince) streamingSince = perf
       if (!live) streamingSince = 0
-      // The motor follows live frames (sessions are started from the
-      // CONNECTION tab); PAUSE freezes it locally.
       scope.tick(perf, ecgFresh && !paused)
-      hrBpm = scope.hrBpm
-      drawEcg()
+      drawAcc()
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
@@ -81,12 +102,17 @@
 
   function resetBuffers() {
     scope.reset()
-    ecgTotal = 0
-    gaps = 0
-    hrBpm = null
+    accX = new Float32Array(accCap)
+    accY = new Float32Array(accCap)
+    accZ = new Float32Array(accCap)
+    accT = new Float64Array(accCap)
+    accHead = 0
+    accFilled = 0
+    accLastT = -Infinity
+    accTotal = 0
   }
 
-  // Bytte av kilde (dual-H10 senere) skal gi et rent skop.
+  // Bytte av kilde (dual-H10) gir et rent skop.
   $effect(() => {
     void selected
     resetBuffers()
@@ -97,33 +123,39 @@
     else paused = true
   }
 
-  function prepare(canvas: HTMLCanvasElement): [CanvasRenderingContext2D, number, number] | null {
+  function drawAcc() {
+    if (!accCanvas) return
     const dpr = window.devicePixelRatio || 1
-    const w = canvas.clientWidth
-    const h = canvas.clientHeight
-    if (!w || !h) return null
-    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-      canvas.width = Math.round(w * dpr)
-      canvas.height = Math.round(h * dpr)
+    const w = accCanvas.clientWidth
+    const h = accCanvas.clientHeight
+    if (!w || !h) return
+    if (accCanvas.width !== Math.round(w * dpr) || accCanvas.height !== Math.round(h * dpr)) {
+      accCanvas.width = Math.round(w * dpr)
+      accCanvas.height = Math.round(h * dpr)
     }
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return null
+    const ctx = accCanvas.getContext('2d')
+    if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
-    return [ctx, w, h]
-  }
 
-  function drawEcg() {
-    if (!ecgCanvas) return
-    const p = prepare(ecgCanvas)
-    if (!p) return
-    const [ctx, w, h] = p
-    const drew = scope.drawScope(ctx, w, h, speed)
-
-    if (drew < 2) {
-      // Warmup overlay: the H10 withholds its whole PMD stream (ECG + ACC)
-      // until it enters "measuring" state, which can take ~30 s with dry
-      // electrodes. Show a friendly status instead of a blank scrolling grid.
+    const mmPx = scope.PX_PER_MM
+    const winS = w / mmPx / speed
+    const t1 = scope.nowInit ? scope.nowT : winS
+    const t0 = t1 - winS
+    const xFor = (t: number) => (t - t0) * speed * mmPx
+    const collect = (v: Float32Array) => {
+      const vs: number[] = [], ts: number[] = []
+      for (let i = 0; i < accFilled; i++) {
+        const idx = (accHead - accFilled + i + accCap * 2) % accCap
+        const tt = accT[idx]
+        if (tt < t0 - 0.2 || tt > t1) continue
+        ts.push(tt); vs.push(v[idx])
+      }
+      return { vs, ts }
+    }
+    const gx = collect(accX), gy = collect(accY), gz = collect(accZ)
+    if (gx.vs.length < 2) {
+      // Oppvarmings-/idle-overlay (H10 holder hele PMD-strømmen ~5-35 s).
       const cx = w / 2, cy = h / 2
       const tsec = live && streamingSince ? (performance.now() - streamingSince) / 1000 : 0
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350)
@@ -139,26 +171,33 @@
       if (live) {
         ctx.fillStyle = '#888'
         ctx.font = '13px sans-serif'
-        ctx.fillText(
-          `waiting for first ECG frame - ${tsec.toFixed(0)} s  (can take ~30 s with dry electrodes; moisten for a faster start)`,
-          cx, cy + 38,
-        )
+        ctx.fillText(`waiting for first ACC frame - ${tsec.toFixed(0)} s`, cx, cy + 38)
       }
       ctx.textAlign = 'left'
       ctx.restore()
+      return
     }
-
-    // NO SIGNAL when the live signal is too noisy or no beat has been seen lately
-    if (drew >= 2 && (scope.poorState || scope.nowT - scope.lastPeakT > 2)) {
-      ctx.fillStyle = '#b06a00'
-      ctx.font = 'bold 13px sans-serif'
-      ctx.fillText('NO SIGNAL', w - 96, 22)
+    let min = Infinity, max = -Infinity
+    for (const arr of [gx.vs, gy.vs, gz.vs]) for (const v of arr) { if (v < min) min = v; if (v > max) max = v }
+    const pad = Math.max(100, (max - min) * 0.1)
+    min -= pad; max += pad
+    const yFor = (v: number) => h - ((v - min) / (max - min)) * h
+    const line = (g: { vs: number[]; ts: number[] }, color: string) => {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.beginPath()
+      let started = false, prevT = -Infinity
+      for (let i = 0; i < g.vs.length; i++) {
+        const x = xFor(g.ts[i]), y = yFor(g.vs[i])
+        if (!started || g.ts[i] - prevT > 1.8 / ACC_FS) { ctx.moveTo(x, y); started = true }
+        else ctx.lineTo(x, y)
+        prevT = g.ts[i]
+      }
+      ctx.stroke()
     }
+    line(gx, '#CB333B'); line(gy, '#40A15D'); line(gz, '#778395')
   }
-
 </script>
 
-<div class="ecg">
+<div class="acc">
   <div class="bar">
     <label>
       Source
@@ -172,7 +211,6 @@
       </select>
     </label>
     <button class="pause" disabled={!recording && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
-    <span class="bpm">&hearts; <b>{hrBpm ?? '--'}</b> bpm</span>
     <div class="speed">
       {#each SPEEDS as s (s)}
         <button class="sp" class:on={speed === s} onclick={() => (speed = s)}>{s}</button>
@@ -187,22 +225,23 @@
       {:else}
         <span class="state">idle - start from the CONNECTION tab</span>
       {/if}
-      <span title="Total ECG samples received this session">{ecgTotal.toLocaleString()} ECG samples</span>
-      <span title="Seconds of ECG recorded">{(ecgTotal / ECG_FS).toFixed(1)} s rec</span>
-      <span class:warn={gaps > 0} title="Dropped ECG packets (missed BLE frames). Poor skin contact shows as NO SIGNAL on the strip, not here.">{gaps} dropped</span>
-      <span>device clock {deviceTimeS.toFixed(3)} s</span>
+      <span title="Total ACC samples received this session">{accTotal.toLocaleString()} ACC samples</span>
+      <span title="Seconds of ACC recorded">{(accTotal / ACC_FS).toFixed(1)} s rec</span>
     </div>
   </div>
-  <!-- Én strimmel i dag; når H10 nr. 2 kommer stables to like strimler her
-       (én per belte), derfor beholder strimmelen klinisk fast høyde. -->
-  <div class="scope ecgscope">
-    <canvas bind:this={ecgCanvas}></canvas>
-    <div class="scale">ECG - 130 Hz - {speed} mm/s - 10 mm/mV - red R-peak, amber ectopic</div>
+  <div class="scope accscope">
+    <canvas bind:this={accCanvas}></canvas>
+    <div class="scale">
+      ACC - 200 Hz - milli-g -
+      <span style="color:#CB333B">X</span>
+      <span style="color:#40A15D">Y</span>
+      <span style="color:#778395">Z</span>
+    </div>
   </div>
 </div>
 
 <style>
-  .ecg {
+  .acc {
     height: calc(100vh - 58px);
     display: flex;
     flex-direction: column;
@@ -241,14 +280,6 @@
     background: var(--color-disabled);
     cursor: not-allowed;
   }
-  .bpm {
-    font-size: 14px;
-    color: var(--color-slate);
-  }
-  .bpm b {
-    color: var(--color-heart);
-    font-size: 18px;
-  }
   .speed {
     display: flex;
     align-items: center;
@@ -280,10 +311,6 @@
     color: var(--color-slate);
     flex-wrap: wrap;
   }
-  .stats .warn {
-    color: var(--color-warning);
-    font-weight: 600;
-  }
   .stats .state {
     text-transform: lowercase;
   }
@@ -297,10 +324,8 @@
     border-radius: var(--radius);
     overflow: hidden;
   }
-  .ecgscope {
-    /* Klinisk strimmelhøyde (~+/-2 mV). Fast høyde med vilje: neste strimmel
-       (H10 nr. 2) stables under denne. */
-    flex: 0 0 220px;
+  .accscope {
+    flex: 1;
   }
   canvas {
     position: absolute;
@@ -319,4 +344,3 @@
     border-radius: 6px;
   }
 </style>
-

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import ConnectionView from './lib/ConnectionView.svelte'
   import EcgView from './lib/EcgView.svelte'
+  import AccView from './lib/AccView.svelte'
   import HrvView from './lib/HrvView.svelte'
   import Landing from './lib/Landing.svelte'
   import type { EcgStreamMsg } from './lib/types'
@@ -11,17 +12,19 @@
   // when navigating between tools. (HR Compare ble fjernet 20.09.2026 - den
   // var et chat-1-verktoey for radiosammenligning og hadde utspilt rollen.
   // All øktstyring bor på TILKOBLING-fanen fra 20.09.2026.)
-  type View = 'home' | 'conn' | 'ecg' | 'hrv'
+  type View = 'home' | 'conn' | 'ecg' | 'acc' | 'hrv'
   const PATH_TO_VIEW: Record<string, View> = {
     '/': 'home',
     '/tilkobling': 'conn',
     '/raw-ecg': 'ecg',
+    '/raw-acc': 'acc',
     '/rhythm-hrv': 'hrv',
   }
   const VIEW_TO_PATH: Record<View, string> = {
     home: '/',
     conn: '/tilkobling',
     ecg: '/raw-ecg',
+    acc: '/raw-acc',
     hrv: '/rhythm-hrv',
   }
   function viewFromPath(): View {
@@ -123,6 +126,9 @@
     <button class:active={view === 'ecg'} onclick={() => go('ecg')}>
       RAW ECG
     </button>
+    <button class:active={view === 'acc'} onclick={() => go('acc')}>
+      RAW ACC
+    </button>
     <button class:active={view === 'hrv'} onclick={() => go('hrv')}>
       RHYTHM / HRV
     </button>
@@ -147,6 +153,14 @@
 </div>
 <div class="pane" style:display={view === 'ecg' ? 'contents' : 'none'}>
   <EcgView
+    sources={sources}
+    send={sendCmd}
+    register={registerEcg}
+    onstatus={ecgStatusFor}
+  />
+</div>
+<div class="pane" style:display={view === 'acc' ? 'contents' : 'none'}>
+  <AccView
     sources={sources}
     send={sendCmd}
     register={registerEcg}
