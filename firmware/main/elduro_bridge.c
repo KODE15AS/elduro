@@ -134,6 +134,8 @@ static esp_timer_handle_t s_rescan_timer;   // backoff before the next scan
 static esp_timer_handle_t s_start_retry_timer;  // retry PMD start writes
 static esp_timer_handle_t s_pmd_watchdog;   // river ned linken hvis PMD uteblir
 static int64_t s_stream_started_us = 0;     // naar mark_streaming ble kalt
+static int64_t s_connected_us = 0;          // naar siste CONNECT-event kom
+static int s_unstable = 0;                   // korte tilkoblinger paa rad (belte-avvisning)
 
 // SD spill state. The writer task owns the file handle; other tasks only
 // enqueue. Marker messages (first byte 0x01) open/close sessions in-order
@@ -566,6 +568,7 @@ static void handle_command(const char *data, int len)
         ESP_LOGI(TAG, "cmd: start (mode=%d)", g_mode);
         g_want_stream = true;
         s_ble_fails = 0;
+        s_unstable = 0;
         s_status_last[0] = '\0';  // fersk statusprogresjon for denne økten
         send_status("scanning", "starter - søker Polar H10");
         if (g_ble_ready) start_measurements();
@@ -633,7 +636,11 @@ static void emit_ecg(const uint8_t *buf, uint16_t len)
         uint64_t expected = (uint64_t)nsamp * ECG_PERIOD_NS;
         if (ts - g_prev_ecg_ts > expected + ECG_PERIOD_NS) g_gaps++;
     }
-    if (g_ecg_total == 0) esp_timer_stop(s_pmd_watchdog);  // EKG i gang - avvæpne vaktbikkja
+    if (g_ecg_total == 0) {
+        esp_timer_stop(s_pmd_watchdog);  // EKG i gang - avvæpne vaktbikkja
+        s_ble_fails = 0;                 // ekte suksess: nullstill backoff
+        s_unstable = 0;
+    }
     g_prev_ecg_ts = ts;
     g_have_prev_ecg = true;
     g_ecg_total += nsamp;
@@ -813,9 +820,17 @@ static void rescan_cb(void *arg) { start_scan(); }
 
 static void schedule_scan(void)
 {
-    int fails = s_ble_fails > 5 ? 5 : s_ble_fails;
+    // Backoff = maks(tilkoblingsfeil, ustabile korte tilkoblinger). Ved
+    // gjentatte belte-avvisninger (reason 531 rett etter connect) må vi IKKE
+    // hamre hvert 300 ms - det hindrer H10 i å rydde spøkelsestilkoblingen.
+    // Trapp opp mot 6 s så beltet får restituere.
+    int n = s_ble_fails > s_unstable ? s_ble_fails : s_unstable;
+    if (n > 8) n = 8;
     esp_timer_stop(s_rescan_timer);
-    esp_timer_start_once(s_rescan_timer, 300000ULL + (uint64_t)fails * 700000ULL);
+    esp_timer_start_once(s_rescan_timer, 300000ULL + (uint64_t)n * 700000ULL);
+    if (s_unstable >= 4) {
+        send_status("error", "beltet avviser tilkobling gjentatte ganger - ta sensoren av stroppen i 30 s (lavt batteri kan bidra)");
+    }
 }
 
 static void ble_connect_wanted(void)
@@ -966,8 +981,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
         if (event->connect.status == 0) {
-            s_ble_fails = 0;
+            // Merk: s_ble_fails/s_unstable nullstilles IKKE her. En vellykket
+            // connect som dør etter 0,2 s (belte-avvisning) skal ikke resette
+            // backoffen - det er først når EKG faktisk flyter at vi er trygge.
             g_conn = event->connect.conn_handle;
+            s_connected_us = esp_timer_get_time();
             // Fresh link: no stream survives a reconnect, so clear any stale
             // streaming state (seen 20.09: "start ignored (streaming=1)"
             // after the belt wedged mid-GATT and the link was re-established).
@@ -984,6 +1002,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGW(TAG, "H10 disconnected reason=%d", event->disconnect.reason);
         esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
         if (event->disconnect.reason == BLE_HS_HCI_ERR(0x3e)) s_ble_fails++;
+        // Kort tilkobling (< 5 s) uten at EKG kom = beltet avviser oss.
+        // Tell som ustabil for progressiv backoff (slutt å hamre).
+        if (s_connected_us && esp_timer_get_time() - s_connected_us < 5000000 &&
+            g_ecg_total == 0) {
+            s_unstable++;
+        }
+        s_connected_us = 0;
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_hr_val = 0;
         g_battery = -1;

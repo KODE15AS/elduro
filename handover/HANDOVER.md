@@ -134,12 +134,20 @@ Kjent forbehold: H10 trenger ~5–35 s oppvarming før første EKG/HR-ramme ette
 start – sensoradferd, ikke en bug.
 
 Robusthetsfiks 20.09 (strømbrudd-test): brå frakobling (USB-C trukket midt i
-økt) etterlot NimBLE uten GATT-prosedyrer, så PMD-abonnementet feilet ved
-rekobling («GATTC proc alloc failed» på attr 0x0033) – HR fløt, men EKG/ACC
-uteble og broen sto fast. Fikset ved (1) `CONFIG_BT_NIMBLE_GATT_MAX_PROCS`
-4→16, og (2) en PMD-vaktbikkje som river ned linken for ren rekobling hvis
-EKG uteblir 40 s etter meldt strømming. Belte-batteri sett så lavt som 18 % –
-lad/bytt før feltbruk.
+økt) ga to separate feil ved rekobling:
+1. NimBLE tom for GATT-prosedyrer → «GATTC proc alloc failed» på attr 0x0033.
+   Fikset: `CONFIG_BT_NIMBLE_GATT_MAX_PROCS` 4→16 + PMD-vaktbikkje (river ned
+   linken for ren rekobling hvis EKG uteblir 40 s etter meldt strømming).
+2. Beltet terminerte selv tilkoblingen (`reason=531`) ~0,2–0,8 s etter connect,
+   midt i PMD-abonnering (ACC-skriv status 7 = not-connected, hr_val=0x0000) –
+   en spøkelsestilkobling på H10 etter det brå bruddet, forverret av 18 %
+   batteri. Firmwaren hamret rekobling hvert 300 ms og hindret beltet i å
+   rydde. Fikset: progressiv backoff (opp mot 6 s) ved korte/avviste
+   tilkoblinger, teller nullstilles først når EKG faktisk flyter, og tydelig
+   UI-beskjed etter 4 forsøk om å ta sensoren av stroppen i 30 s.
+   **Fysisk kur (belte-side, kan ikke fikses i firmware): strømsykle beltet –
+   sensor av stroppen 30 s – for å tømme spøkelsestilkoblingen. Lad/bytt
+   batteri (18 %) før feltbruk.**
 
 ## Historikk (daterte tillegg, immutable)
 
