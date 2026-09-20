@@ -41,6 +41,7 @@
 #include "sdmmc_cmd.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
+#include "driver/temperature_sensor.h"
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -975,12 +976,21 @@ static void host_task(void *param) { nimble_port_run(); nimble_port_freertos_dei
 
 // ---- WiFi ------------------------------------------------------------------
 
+static esp_timer_handle_t s_wifi_retry_timer;
+static void wifi_retry_cb(void *arg) { esp_wifi_connect(); }
+
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         g_ws_up = false;
         led_refresh();
-        if (s_retries++ < 1000) esp_wifi_connect();
+        // Backoff 1 -> 10 s i stedet for umiddelbar reconnect: en borte
+        // hotspot skal ikke bli en radio-varmeovn (sett 20.09: "veldig varm"
+        // ESP32 etter lengre frakoblede perioder).
+        uint64_t delay_ms = 1000ULL * (s_retries < 10 ? (s_retries ? s_retries : 1) : 10);
+        s_retries++;
+        esp_timer_stop(s_wifi_retry_timer);
+        esp_timer_start_once(s_wifi_retry_timer, delay_ms * 1000);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, ">> GOT IP: " IPSTR, IP2STR(&e->ip_info.ip));
@@ -1023,6 +1033,16 @@ static void net_task(void *param)
     vTaskDelete(NULL);
 }
 
+static void temp_log_cb(void *arg)
+{
+    temperature_sensor_handle_t *ts = (temperature_sensor_handle_t *)arg;
+    float c = 0;
+    if (temperature_sensor_get_celsius(*ts, &c) == ESP_OK) {
+        ESP_LOGI(TAG, ">> chip %.1f C, heap %lu KB fritt",
+                 c, (unsigned long)(esp_get_free_heap_size() / 1024));
+    }
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -1043,6 +1063,25 @@ void app_main(void)
         .callback = start_retry_cb, .name = "pmd_retry",
     };
     ESP_ERROR_CHECK(esp_timer_create(&retry_args, &s_start_retry_timer));
+
+    const esp_timer_create_args_t wifi_retry_args = {
+        .callback = wifi_retry_cb, .name = "wifi_retry",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&wifi_retry_args, &s_wifi_retry_timer));
+
+    // Termikk-overvaaking ("veldig varm" 20.09): logg chip-temperatur og
+    // fritt minne hvert minutt, saa varmeklager kan moetes med tall.
+    static temperature_sensor_handle_t s_tsens;
+    temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
+    if (temperature_sensor_install(&tc, &s_tsens) == ESP_OK &&
+        temperature_sensor_enable(s_tsens) == ESP_OK) {
+        const esp_timer_create_args_t temp_args = {
+            .callback = temp_log_cb, .name = "temp_log", .arg = &s_tsens,
+        };
+        esp_timer_handle_t th;
+        ESP_ERROR_CHECK(esp_timer_create(&temp_args, &th));
+        ESP_ERROR_CHECK(esp_timer_start_periodic(th, 60 * 1000000ULL));
+    }
 
     // microSD store-and-forward. GPIO21 is shared between the SD CS and the
     // amber LED, so the LED task only runs when no card is mounted.

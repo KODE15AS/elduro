@@ -60,6 +60,22 @@ Driftsregler på benk: én fane styrer start/stopp; hotspoten må stå på med
 skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
 (broen holder ikke beltet lenger i idle).
 
+### Maskinvarehendelse 20.09.2026: Sense-hovedkortet termisk defekt
+
+Ved Grove Base-forberedelsene ble XIAO ESP32-S3 **Sense**-hovedkortet målt til
+98–109 °C chip-temperatur (maks-spek 105 °C) i nær tomgang. Eliminasjonstest
+frikjente microSD-kort, datterkort og antenne; **reservekortet (XIAO ESP32-S3
+plain) måler 44 °C med identisk firmware og antenne** – hovedkortet er defekt
+og pensjonert. Mulig bidrag: ukene med antenneløs drift (PA-mismatch).
+
+- **Reservekortet er nå feltbroen** (ny MAC → ny agent-id), men uten
+  Sense-datterkort: **ingen SD-spill før nytt Sense-kort er kjøpt**
+  (113991115, ~$14 – bestillingspunkt). Datterkortet med SD-slot antas friskt.
+- Firmwaren fikk termikk-instrumentering i samme økt: chip-temperatur +
+  fritt minne logges hvert minutt, og WiFi-reconnect har nå backoff (1→10 s)
+  så en borte hotspot ikke varmer radioen unødig.
+- Grove Base krever lodding av batterikontakt – utsatt til loddeøkt.
+
 ## Gjenstående (prioritert backlog)
 
 - [~] **microSD store-and-forward (FatFs)** – *etappe 1 levert og
