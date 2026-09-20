@@ -45,9 +45,16 @@ Status 19.09.2026 (benk-økt, se firmware-commit for detaljer):
   fuktede elektroder, start hrv fra UI-et, forvent stabil strøm. Merk også
   hr_val=0x0000 i samme runde (HR-discovery racet mot 531-frakoblingene) –
   verifiser at HR/RR kommer når linken står.
-- [ ] **Åpent: backend-arbitrering** «nyeste start vinner» per enhet, så to
-  faner/kilder ikke kan sloss om beltet (sett i praksis 19.09).
-- [ ] Siste hrv-verifisering etter antennesjekk, så vanlig backlog under.
+- [x] **Backend-arbitrering** «nyeste start vinner»: en start stopper alle
+  andre kilder (b2e66bf); verifisert begge veier 20.09. Gjøres per enhet når
+  dual-H10 kommer.
+- [x] **Sluttverifisering 20.09:** brukerstyrt RECORD fra UI-et ga EKG ~132,
+  ACC ~203 samples/s og HR 1,0/s med RR, uten linktap. Viktige tillegg på
+  veien: BLE-radioprioritet under strømming (63c9e73, H10 la på ved
+  notifikasjonsstall), UI adopterer eksternt startede økter (72db2ff), og
+  belte-kur ved 531-frakoblinger: knepp sensoren av stroppen 30 s.
+  Merk: beltets «2 Bluetooth-enheter»-innstilling står PÅ (Polar Flow);
+  vurder å slå den av hvis tilkoblingsgrums gjenoppstår.
 
 Driftsregler på benk: én fane styrer start/stopp; hotspoten må stå på med
 skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
