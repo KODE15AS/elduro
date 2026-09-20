@@ -196,9 +196,9 @@
           <h3>Økt</h3>
           <div class="controls">
             <select bind:value={modes[id]}>
-              <option value="hrv">hrv - EKG + ACC + HR/RR (anbefalt)</option>
-              <option value="ecg">ecg - EKG + ACC</option>
-              <option value="hr">hr - kun HR/RR</option>
+              <option value="hrv">hrv (anbefalt)</option>
+              <option value="ecg">ecg</option>
+              <option value="hr">hr</option>
             </select>
             {#if busy(id, st)}
               <button class="stop" onclick={() => stop(id)}>STOPP</button>
@@ -324,16 +324,21 @@
   code { font-size: 12px; color: var(--color-slate); }
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-    gap: 18px;
+    /* auto-fill + romslig minimum: blokker bryter til ny rad i stedet for å
+       klemmes/overlappe (sett 20.09: knapp under strømmer-tabellen). */
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 18px 26px;
   }
-  .controls { display: flex; gap: 8px; align-items: center; }
+  .block { min-width: 0; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   select {
     padding: 5px 8px;
     border: 1px solid var(--color-line);
     border-radius: 6px;
     background: var(--color-bg);
     font-family: var(--font-body);
+    min-width: 0;
+    max-width: 100%;
   }
   button.start, button.stop {
     border: 0;
@@ -388,7 +393,8 @@
   .status.err { color: var(--color-error); font-weight: 600; }
   .hint { margin: 2px 0 0; font-size: 11px; color: var(--color-slate); }
   table { border-collapse: collapse; font-size: 13px; width: 100%; }
-  td { padding: 2px 10px 2px 0; }
+  td { padding: 2px 10px 2px 0; white-space: nowrap; }
+  td:last-child { white-space: normal; }
   td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
   td.warn { color: var(--color-error); font-weight: 700; }
   .dim { color: var(--color-slate); font-size: 12px; }
