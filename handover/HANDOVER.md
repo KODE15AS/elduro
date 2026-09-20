@@ -62,14 +62,20 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
 
 ## Gjenstående (prioritert backlog)
 
-- [~] **microSD store-and-forward (FatFs)** – *etappe 1 levert 20.09.2026:*
-  SD-spill i firmwaren (FAT32-montering med selvtest ved boot, øktkataloger
-  `S<boot>-<uptime>/` med header + append-only `frames.jsonl`, `seq` per
-  strøm, fsync hvert 50. frame, segment-lukking ved linktap). Verifisert på
-  benk: kort montert (30 GB), selvtest OK. **Merk: GPIO21 deles mellom SD-CS
-  og statuslampen – lampen er deaktivert når kort står i.** Gjenstår: full
-  øktverifisering med belte, opplasting/gjenopptak ved reconnect og
-  dedup/merge i backend (henger sammen med arkivkodingen under).
+- [~] **microSD store-and-forward (FatFs)** – *etappe 1 levert og
+  FELTVERIFISERT 20.09.2026:* SD-spill i firmwaren (FAT32-montering med
+  selvtest ved boot, øktkataloger `S<boot>-<uptime>/` med header +
+  append-only `frames.jsonl`, `seq` per strøm, fsync hvert 50. frame,
+  segment-lukking ved linktap, øktlisting ved boot). Reell test med
+  bevegelse (romaskin/gange/hopp, 4–5 m avstand): 4,2 MB frames.jsonl på
+  kortet, parallelt med tapsfri live-strøm (130,11 Hz, 0 ts-hull). **Merk:
+  GPIO21 deles mellom SD-CS og statuslampen – lampen er deaktivert når kort
+  står i (flimrer med SD-aktivitet).** Gjenstår: opplasting/gjenopptak ved
+  reconnect og dedup/merge i backend (avhenger av MariaDB-ingesten under).
+- Signalkvalitet vurdert 20.09 (fangst + analyse mot BT-600-referanse):
+  ESP32-stien er statistisk identisk med benkreferansen i ro og i bevegelse;
+  bevegelsesartefakter er elektrodefysikk, ikke kjedefeil. Elektrodene
+  trenger noen minutter på kroppen før impedansen setter seg.
 - [~] **Arkiv-koding** – *beslutning 20.09.2026 (Jørn): lagring i MariaDB på
   raven.* Vurdering med skjemautkast, ingest-veier og akseptansetest skrevet:
   [docs/format/arkivkoding-vurdering.md](../docs/format/arkivkoding-vurdering.md).

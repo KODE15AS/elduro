@@ -31,11 +31,18 @@ laptop (norm «container»).
 ### Repo-spesifikke avvik og advarsler
 
 - **Unntak fra norm «container» (ett repo = én container):** compose-stacken
-  har to tjenester, `web` og `caddy`. Caddy er den offentlige ingressen på
-  raven og fronter **også studio15/erbium.no og wordpress-kode15**, ikke bare
-  elduro.no. Endringer i `Caddyfile` eller caddy-tjenesten påvirker andre
-  tjenester i produksjon – vær varsom, og se migreringsplanen Caddy → Traefik
-  i [handover/HANDOVER.md](./handover/HANDOVER.md).
+ har to tjenester, `web` og `caddy`. Caddy er den offentlige ingressen på
+ raven og fronter **også studio15/erbium.no og wordpress-kode15**, ikke bare
+ elduro.no. Endringer i `Caddyfile` eller caddy-tjenesten påvirker andre
+ tjenester i produksjon – vær varsom, og se migreringsplanen Caddy → Traefik
+ i [handover/HANDOVER.md](./handover/HANDOVER.md).
+- **Unntak fra norm «container» nr. 2 (besluttet av Jørn 20.09.2026):**
+ elduros kanoniske arkiv skal ligge i den **delte `mariadb:11.4`-containeren**
+ på raven (egen database + egen bruker for elduro), ikke i en egen
+ db-container. Begrunnelse: databasene er ikke på GitHub, og ett felles
+ MariaDB-regime gir ett backup-regime. Konsekvens: omstart/oppgradering av
+ den delte containeren påvirker flere tjenester – koordiner. Se
+ [docs/format/arkivkoding-vurdering.md](./docs/format/arkivkoding-vurdering.md).
 - **Rådata kun på disk:** `recordings/` (måledata) og `bin/` er gitignorert og
   finnes bare på RAVEN. De kan ikke gjenopprettes fra git – slett aldri disse
   som «opprydding».

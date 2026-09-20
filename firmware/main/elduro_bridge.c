@@ -43,6 +43,7 @@
 #include "driver/spi_common.h"
 #include <sys/stat.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -295,6 +296,21 @@ static bool sd_mount(void)
         return false;
     }
     ESP_LOGI(TAG, ">> SD self-test OK (boot.log %ld bytes)", (long)st.st_size);
+
+    // List spill sessions at boot so a serial glance verifies field capture.
+    DIR *d = opendir(SD_MOUNT "/elduro");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] != 'S') continue;
+            char p[128];
+            struct stat fs_ = {0};
+            snprintf(p, sizeof(p), SD_MOUNT "/elduro/%.48s/frames.jsonl", e->d_name);
+            stat(p, &fs_);
+            ESP_LOGI(TAG, ">> SD session %s: frames.jsonl %ld bytes", e->d_name, (long)fs_.st_size);
+        }
+        closedir(d);
+    }
     return true;
 }
 
