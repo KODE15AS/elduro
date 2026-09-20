@@ -132,6 +132,8 @@ static QueueHandle_t s_tx_queue;
 static int s_ble_fails = 0;                 // consecutive failed connect rounds
 static esp_timer_handle_t s_rescan_timer;   // backoff before the next scan
 static esp_timer_handle_t s_start_retry_timer;  // retry PMD start writes
+static esp_timer_handle_t s_pmd_watchdog;   // river ned linken hvis PMD uteblir
+static int64_t s_stream_started_us = 0;     // naar mark_streaming ble kalt
 
 // SD spill state. The writer task owns the file handle; other tasks only
 // enqueue. Marker messages (first byte 0x01) open/close sessions in-order
@@ -438,6 +440,14 @@ static void mark_streaming(void)
     // Open the SD spill session before frames start flowing (in-queue order).
     sd_marker("\x01OPEN:%s", mode_txt);
     s_sd_session = true;
+    // PMD-vaktbikkje: i ecg/hrv skal EKG-rammer begynne innen rimelig tid
+    // (H10-oppvarming <= ~35 s). Uteblir de, er PMD-abonnementet dødt (f.eks.
+    // "GATTC proc alloc failed" etter strømbrudd) - riv ned for ren rekobling.
+    s_stream_started_us = esp_timer_get_time();
+    if (g_mode == MODE_ECG || g_mode == MODE_HRV) {
+        esp_timer_stop(s_pmd_watchdog);
+        esp_timer_start_once(s_pmd_watchdog, 40 * 1000000ULL);
+    }
     ESP_LOGI(TAG, ">> streaming (mode=%d)", g_mode);
     send_status("streaming",
                 g_mode == MODE_HR ? "HR" : (g_mode == MODE_HRV ? "ECG+ACC+HR" : "ECG+ACC"));
@@ -497,9 +507,25 @@ static void start_retry_cb(void *arg)
     if (g_want_stream && g_ble_ready && !g_streaming) start_measurements();
 }
 
+// PMD-vaktbikkje: kalles 40 s etter at strømming ble meldt. Har ingen EKG-
+// rammer kommet, er PMD-abonnementet dødt - riv ned linken for ren rekobling
+// (start_scan skjer i DISCONNECT-handleren fordi g_want_stream fortsatt er satt).
+static void pmd_watchdog_cb(void *arg)
+{
+    if (!g_want_stream) return;
+    if (g_ecg_total == 0 && g_conn != BLE_HS_CONN_HANDLE_NONE) {
+        ESP_LOGW(TAG, ">> PMD-vaktbikkje: ingen EKG paa 40 s - river ned linken for ren rekobling");
+        send_status("scanning", "PMD startet ikke - kobler til paa nytt");
+        s_ble_fails = 0;
+        s_status_last[0] = '\0';
+        ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}
+
 static void stop_measurements(void)
 {
     esp_timer_stop(s_start_retry_timer);
+    esp_timer_stop(s_pmd_watchdog);
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     if (s_sd_session) {
         s_sd_session = false;
@@ -607,6 +633,7 @@ static void emit_ecg(const uint8_t *buf, uint16_t len)
         uint64_t expected = (uint64_t)nsamp * ECG_PERIOD_NS;
         if (ts - g_prev_ecg_ts > expected + ECG_PERIOD_NS) g_gaps++;
     }
+    if (g_ecg_total == 0) esp_timer_stop(s_pmd_watchdog);  // EKG i gang - avvæpne vaktbikkja
     g_prev_ecg_ts = ts;
     g_have_prev_ecg = true;
     g_ecg_total += nsamp;
@@ -1125,6 +1152,11 @@ void app_main(void)
         .callback = wifi_retry_cb, .name = "wifi_retry",
     };
     ESP_ERROR_CHECK(esp_timer_create(&wifi_retry_args, &s_wifi_retry_timer));
+
+    const esp_timer_create_args_t pmd_wd_args = {
+        .callback = pmd_watchdog_cb, .name = "pmd_watchdog",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&pmd_wd_args, &s_pmd_watchdog));
 
     // Termikk-overvaaking ("veldig varm" 20.09): logg chip-temperatur og
     // fritt minne hvert minutt, saa varmeklager kan moetes med tall.

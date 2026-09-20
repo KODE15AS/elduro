@@ -27,3 +27,7 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # Long filenames for SD spill (header.json, frames.jsonl, session dirs)
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=64
+
+# Stoerre GATT-prosedyre-pool: unngaa "GATTC proc alloc failed" paa PMD-
+# abonnering etter brutal frakobling (stroembrudd 20.09). Default 4 er for lavt.
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=16
