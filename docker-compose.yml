@@ -13,6 +13,14 @@ services:
       # Built agent binaries (e.g. the Windows exe for lane 2) are
       # downloadable at /dl/.
       - ./bin:/app/static/dl:ro
+    environment:
+      # MariaDB-ingest (kanonisk arkiv). Settes i .env (gitignorert) ved
+      # provisjonering; tom verdi = ingest av. Se db/schema.sql og
+      # docs/format/arkivkoding-vurdering.md. Databasen ligger i den delte
+      # mariadb:11.4-containeren (dokumentert unntak, AGENTS.md) - web må da
+      # også joines til dens docker-nett (gjøres ved provisjonering).
+      ELDURO_DB_URL: ${ELDURO_DB_URL:-}
+      ELDURO_SUBJECT_ID: ${ELDURO_SUBJECT_ID:-subject-1}
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"

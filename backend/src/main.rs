@@ -1,3 +1,5 @@
+mod db;
+
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
@@ -35,6 +37,7 @@ static NEXT_AGENT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 struct AppState {
     ui_tx: broadcast::Sender<String>,
     agents: Mutex<HashMap<String, AgentConn>>,
+    ingest: db::Ingest,
 }
 
 impl AppState {
@@ -70,6 +73,7 @@ async fn main() {
     let state = Arc::new(AppState {
         ui_tx,
         agents: Mutex::new(HashMap::new()),
+        ingest: db::Ingest::from_env(),
     });
 
     // Serve static assets; anything the file server does not find falls back
@@ -187,6 +191,15 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
             cmd["mode"] = m.into();
         }
         let _ = conn.tx.send(cmd.to_string());
+        // Arkiv-ingest: øktbokføring følger kommandostrømmen.
+        if t == "start" {
+            state.ingest.send(db::Msg::SessionStart {
+                source: source.to_string(),
+                mode: v["mode"].as_str().unwrap_or("ecg").to_string(),
+            });
+        } else {
+            state.ingest.send(db::Msg::SessionEnd { source: source.to_string() });
+        }
     } else {
         let _ = state.ui_tx.send(
             serde_json::json!({
@@ -249,8 +262,8 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
                 match msg {
                     Message::Text(txt) => {
                         let raw = txt.as_str();
-                        // Agents may re-register when adapters are plugged/unplugged.
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                            // Agents may re-register when adapters are plugged/unplugged.
                             if v["t"].as_str() == Some("register") {
                                 let adapters: Vec<AdapterInfo> =
                                     serde_json::from_value(v["adapters"].clone()).unwrap_or_default();
@@ -259,6 +272,24 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
                                     .and_modify(|c| c.adapters = adapters);
                                 state.broadcast_sources().await;
                                 continue;
+                            }
+                            // Arkiv-ingest: rammer til MariaDB (no-op uten DB),
+                            // agent-initierte stopp lukker økten.
+                            let msg_t = v["t"].as_str().map(str::to_owned);
+                            match msg_t.as_deref() {
+                                Some("ecg") | Some("acc") | Some("hr") => {
+                                    state.ingest.send(db::Msg::Frame { v });
+                                }
+                                Some("status") => {
+                                    if v["state"].as_str() == Some("stopped") {
+                                        if let Some(src) = v["source"].as_str() {
+                                            state.ingest.send(db::Msg::SessionEnd {
+                                                source: src.to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         let _ = state.ui_tx.send(raw.to_string());

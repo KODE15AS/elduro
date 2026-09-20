@@ -76,12 +76,18 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
   ESP32-stien er statistisk identisk med benkreferansen i ro og i bevegelse;
   bevegelsesartefakter er elektrodefysikk, ikke kjedefeil. Elektrodene
   trenger noen minutter på kroppen før impedansen setter seg.
-- [~] **Arkiv-koding** – *beslutning 20.09.2026 (Jørn): lagring i MariaDB på
-  raven.* Vurdering med skjemautkast, ingest-veier og akseptansetest skrevet:
-  [docs/format/arkivkoding-vurdering.md](../docs/format/arkivkoding-vurdering.md).
-  Gjenstår: avklare egen db-container vs. delt (anbefalt: egen), implementere
-  backend-ingest og v1-migrering. SD-spillformatet (etappe 1 over) er
-  JSONL-kompatibelt med dette by design.
+- [~] **Arkiv-koding** – *besluttet 20.09.2026 (Jørn): MariaDB i den DELTE
+  `mariadb:11.4`-containeren på raven* (dokumentert unntak fra
+  container-normen, se AGENTS.md; begrunnelse: felles backup-regime).
+  Vurdering: [docs/format/arkivkoding-vurdering.md](../docs/format/arkivkoding-vurdering.md).
+  *Implementert 20.09:* skjema i [db/schema.sql](../db/schema.sql) og
+  backend-ingest (`backend/src/db.rs`, INSERT IGNORE på dedup-nøkkelen,
+  øktbokføring fra kommandostrømmen; aktiveres av `ELDURO_DB_URL` i `.env`,
+  passiv uten). **Gjenstår (krever tilgang til delt container):** opprette
+  `elduro`-database + bruker, kjøre schema.sql, sette `ELDURO_DB_URL` og
+  joine web-containeren til mariadb-nettet; deretter akseptansetesten
+  (vurderingen kap. 6) og v1-migrering av `recordings/` (3,9 GB).
+  Kjent v1-forbehold: device_id = source til belteidentitet følger rammene.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
 - [ ] **Ekte veggklokke på ESP32 (SNTP)** for korpus-justering på tvers av
   økter og enheter.
