@@ -70,8 +70,12 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
   og statuslampen – lampen er deaktivert når kort står i.** Gjenstår: full
   øktverifisering med belte, opplasting/gjenopptak ved reconnect og
   dedup/merge i backend (henger sammen med arkivkodingen under).
-- [ ] **Arkiv-koding** – avgjøres sammen med SD-spillformatet (samme problem);
-  se frame-schema seksjon 6.
+- [~] **Arkiv-koding** – *beslutning 20.09.2026 (Jørn): lagring i MariaDB på
+  raven.* Vurdering med skjemautkast, ingest-veier og akseptansetest skrevet:
+  [docs/format/arkivkoding-vurdering.md](../docs/format/arkivkoding-vurdering.md).
+  Gjenstår: avklare egen db-container vs. delt (anbefalt: egen), implementere
+  backend-ingest og v1-migrering. SD-spillformatet (etappe 1 over) er
+  JSONL-kompatibelt med dette by design.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
 - [ ] **Ekte veggklokke på ESP32 (SNTP)** for korpus-justering på tvers av
   økter og enheter.
