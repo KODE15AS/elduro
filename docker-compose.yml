@@ -21,6 +21,10 @@ services:
       # også joines til dens docker-nett (gjøres ved provisjonering).
       ELDURO_DB_URL: ${ELDURO_DB_URL:-}
       ELDURO_SUBJECT_ID: ${ELDURO_SUBJECT_ID:-subject-1}
+    networks:
+      - default
+      # Delt MariaDB-stack (kanonisk arkiv) - se unntak nr. 2 i AGENTS.md.
+      - mariadb-nett
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"
@@ -56,6 +60,9 @@ volumes:
   caddy_config:
 
 networks:
+  mariadb-nett:
+    name: mariadb-nett
+    external: true
   studio15:
     name: studio15
     external: true
