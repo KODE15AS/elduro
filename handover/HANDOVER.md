@@ -72,7 +72,10 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
 - [ ] **Felt-/mobil-UI:** styrelayout, wake lock, aggressiv reconnect.
 - [ ] **Hendelsesmarkør:** ACC-tapp som MVP; eventuelt ESP32-knapp.
 - [ ] **Batteri/kapsling/effektbudsjett** for 31+ min økt (1S 1000 mAh LiPo).
-- [ ] **HR Compare med ESP32 som kilde** (`mode: hr`) – verifiser.
+- [x] ~~HR Compare med ESP32 som kilde~~ – **HR Compare-fanen ble fjernet
+  20.09.2026** (chat-1-verktøy for radiosammenligning, utspilt; hadde
+  60 s-fellen og misvisende «Lenovo»-lane). `mode: hr` består i firmware og
+  agent for fremtidig bruk.
 - [ ] **Polar H10 nr. 2:** dobbelbelte-plassering, hjerteslag-forankret synk,
   deretter adaptiv LMS-opprydding og AV-blokk-klassifisering.
 - [ ] **Kubios-validering** av RMSSD-tallene (engangs, benk-opptak).

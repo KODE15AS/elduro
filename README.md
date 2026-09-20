@@ -62,11 +62,11 @@ migrated; do not treat the v1 on-disk layout as final.
 - `capture/` - Rust BLE capture agent (btleplug). Registers its adapters with
   the backend and streams Heart Rate Profile data and raw PMD (ECG + ACC) from
   the H10. `src/pmd.rs` holds the Polar PMD protocol and frame decoders.
-- `frontend/` - Svelte + Vite SPA: a landing page plus three tools -
-  **HR Compare** (per-radio lanes), **Raw ECG** (clinical live ECG + 3-axis ACC
-  scope), and **Rhythm / HRV** (rhythm strip, native + ECG-derived RR tachogram,
-  rolling RMSSD). Shared ECG engine in `src/lib/ecgScope.ts`; path-routed under
-  elduro.no.
+- `frontend/` - Svelte + Vite SPA: a landing page plus two tools -
+  **Raw ECG** (clinical live ECG + 3-axis ACC scope) and **Rhythm / HRV**
+  (rhythm strip, native + ECG-derived RR tachogram, rolling RMSSD). Shared ECG
+  engine in `src/lib/ecgScope.ts`; path-routed under elduro.no. (HR Compare,
+  chat-1-verktøyet for radiosammenligning, ble fjernet 20.09.2026.)
 - `firmware/` - **field agent (bring-up complete):** XIAO ESP32-S3 Sense
   running an ESP-IDF/NimBLE port of the PMD decoder. It links to the H10 over
   BLE and streams ECG + ACC + native HR/RR to `wss://elduro.no/ws/agent` over
