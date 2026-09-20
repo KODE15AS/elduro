@@ -34,6 +34,8 @@
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "esp_coexist.h"
+#include "esp_netif_sntp.h"
+#include <sys/time.h>
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -137,6 +139,28 @@ static esp_timer_handle_t s_pmd_watchdog;   // river ned linken hvis PMD uteblir
 static int64_t s_stream_started_us = 0;     // naar mark_streaming ble kalt
 static int64_t s_connected_us = 0;          // naar siste CONNECT-event kom
 static int s_unstable = 0;                   // korte tilkoblinger paa rad (belte-avvisning)
+
+// Ekte veggklokke (SNTP, chat-4 backlog #4): ts_host_ns bytter fra monoton
+// oppetid til Unix-ns foerst naar synken er bekreftet - aldri 1970-tall i
+// arkivet. Korpus-justering paa tvers av enheter/oekter (og dual-H10-synk)
+// trenger ekte tid.
+static volatile bool s_time_synced = false;
+
+static uint64_t host_now_ns(void)
+{
+    if (s_time_synced) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        return (uint64_t)tv.tv_sec * 1000000000ULL + (uint64_t)tv.tv_usec * 1000ULL;
+    }
+    return (uint64_t)esp_timer_get_time() * 1000ULL;
+}
+
+static void on_time_sync(struct timeval *tv)
+{
+    s_time_synced = true;
+    ESP_LOGI(TAG, ">> SNTP synket: unix %lld s", (long long)tv->tv_sec);
+}
 
 // SD spill state. The writer task owns the file handle; other tasks only
 // enqueue. Marker messages (first byte 0x01) open/close sessions in-order
@@ -345,9 +369,11 @@ static void sd_open_session(const char *mode)
         fprintf(h,
             "{\"type\":\"elduro-sd-spill\",\"version\":1,\"agent\":\"%s\","
             "\"source\":\"%s\",\"mode\":\"%s\",\"boot\":%lu,\"uptime_ms\":%llu,"
-            "\"clock\":\"unsynced\",\"schema_version\":2}\n",
+            "\"clock\":\"%s\",\"unix_ns\":%llu,\"schema_version\":2}\n",
             s_agent_id, s_source, mode, (unsigned long)s_boot_count,
-            (unsigned long long)(esp_timer_get_time() / 1000));
+            (unsigned long long)(esp_timer_get_time() / 1000),
+            s_time_synced ? "ntp-synced" : "unsynced",
+            (unsigned long long)host_now_ns());
         fflush(h);
         fsync(fileno(h));
         fclose(h);
@@ -648,7 +674,7 @@ static void emit_ecg(const uint8_t *buf, uint16_t len)
 
     int64_t now = esp_timer_get_time();
     uint64_t elapsed_ms = (now - g_session_start_us) / 1000;
-    uint64_t host_ns = (uint64_t)now * 1000;
+    uint64_t host_ns = host_now_ns();
 
     size_t cap = 220 + (size_t)nsamp * 9;
     char *out = malloc(cap);
@@ -739,7 +765,7 @@ static void emit_acc(const uint8_t *buf, uint16_t len)
     if (ntri == 0) return;
     g_acc_total += ntri;
 
-    uint64_t host_ns = (uint64_t)esp_timer_get_time() * 1000;
+    uint64_t host_ns = host_now_ns();
     size_t cap = 160 + (size_t)ntri * 22;
     char *out = malloc(cap);
     if (!out) return;
@@ -1111,6 +1137,12 @@ static void net_task(void *param)
     esp_wifi_connect();
 
     xEventGroupWaitBits(s_wifi_events, GOT_IP_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+
+    // SNTP i bakgrunnen (via hotspotens internett); on_time_sync setter flagget.
+    esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp.sync_cb = on_time_sync;
+    ESP_ERROR_CHECK(esp_netif_sntp_init(&sntp));
+
     ws_start();
     vTaskDelete(NULL);
 }
@@ -1176,12 +1208,14 @@ static void telemetry_cb(void *arg)
     snprintf(out, 384,
         "{\"t\":\"telemetry\",\"source\":\"%s\",\"wifi_rssi\":%d,\"chip_c\":%.1f,"
         "\"heap_kb\":%lu,\"sd\":%s,\"ble_connected\":%s,\"ble_rssi\":%d,"
-        "\"battery\":%d,\"device\":\"%s\",\"streaming\":%s,\"uptime_s\":%llu}",
+        "\"battery\":%d,\"device\":\"%s\",\"streaming\":%s,\"uptime_s\":%llu,"
+        "\"clock\":\"%s\"}",
         s_source, wifi_rssi, c,
         (unsigned long)(esp_get_free_heap_size() / 1024),
         s_sd_ok ? "true" : "false", conn ? "true" : "false", (int)ble_rssi,
         g_battery, g_device_name, g_streaming ? "true" : "false",
-        (unsigned long long)(esp_timer_get_time() / 1000000));
+        (unsigned long long)(esp_timer_get_time() / 1000000),
+        s_time_synced ? "ntp-synced" : "unsynced");
     enqueue(out);
 }
 
