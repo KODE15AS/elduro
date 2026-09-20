@@ -83,10 +83,11 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
   *Implementert 20.09:* skjema i [db/schema.sql](../db/schema.sql) og
   backend-ingest (`backend/src/db.rs`, INSERT IGNORE på dedup-nøkkelen,
   øktbokføring fra kommandostrømmen; aktiveres av `ELDURO_DB_URL` i `.env`,
-  passiv uten). **Gjenstår (krever tilgang til delt container):** opprette
-  `elduro`-database + bruker, kjøre schema.sql, sette `ELDURO_DB_URL` og
-  joine web-containeren til mariadb-nettet; deretter akseptansetesten
-  (vurderingen kap. 6) og v1-migrering av `recordings/` (3,9 GB).
+  passiv uten). *Provisjonert og I DRIFT 20.09:* `elduro`-db + bruker i den
+  delte containeren, web joinet `mariadb-nett`, creds i gitignorert `.env`.
+  **Akseptansetesten (vurderingen kap. 6) bestått:** 665 rammer levert
+  hullete + komplett re-levering ga null duplikater og eksakt samplesum.
+  Gjenstår: v1-migrering av `recordings/` (3,9 GB) og SD-spill-opplasting.
   Kjent v1-forbehold: device_id = source til belteidentitet følger rammene.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
 - [ ] **Ekte veggklokke på ESP32 (SNTP)** for korpus-justering på tvers av
