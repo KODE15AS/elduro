@@ -23,3 +23,7 @@ CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Long filenames for SD spill (header.json, frames.jsonl, session dirs)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=64

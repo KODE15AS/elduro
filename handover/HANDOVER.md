@@ -62,8 +62,14 @@ skjermen åpen for ESP32-broen; BT-600 og ESP32 kan nå stå påslått samtidig
 
 ## Gjenstående (prioritert backlog)
 
-- [ ] **microSD store-and-forward (FatFs)** – største gjenstående
-  feltpålitelighets-gap; ingen datatap når WiFi faller ut.
+- [~] **microSD store-and-forward (FatFs)** – *etappe 1 levert 20.09.2026:*
+  SD-spill i firmwaren (FAT32-montering med selvtest ved boot, øktkataloger
+  `S<boot>-<uptime>/` med header + append-only `frames.jsonl`, `seq` per
+  strøm, fsync hvert 50. frame, segment-lukking ved linktap). Verifisert på
+  benk: kort montert (30 GB), selvtest OK. **Merk: GPIO21 deles mellom SD-CS
+  og statuslampen – lampen er deaktivert når kort står i.** Gjenstår: full
+  øktverifisering med belte, opplasting/gjenopptak ved reconnect og
+  dedup/merge i backend (henger sammen med arkivkodingen under).
 - [ ] **Arkiv-koding** – avgjøres sammen med SD-spillformatet (samme problem);
   se frame-schema seksjon 6.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.

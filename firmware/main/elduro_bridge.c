@@ -36,6 +36,13 @@
 #include "esp_coexist.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
+#include "nvs.h"
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -83,6 +90,19 @@ static const uint8_t ACC_STOP_CMD[] = { 0x03, 0x02 };
 //  * back off between failed attempts instead of hammering
 #define RSSI_MIN_DBM  (-85)
 
+// microSD store-and-forward (chat-4, frame-schema section 6 "field spill"):
+// one directory per session with a header, then append-only frames.jsonl in
+// seq order - safe to truncate at any byte. The Sense board wires the SD
+// slot to SPI with CS on GPIO21, which is ALSO the amber status LED net, so
+// while the SD is mounted the LED task must not run (the LED then flickers
+// with SD activity instead; session status lives in the web UI).
+#define SD_PIN_CS     GPIO_NUM_21
+#define SD_PIN_SCK    GPIO_NUM_7
+#define SD_PIN_MISO   GPIO_NUM_8
+#define SD_PIN_MOSI   GPIO_NUM_9
+#define SD_MOUNT      "/sdcard"
+#define SD_SYNC_EVERY 50  // fsync cadence in frames (~5 s at full PMD rate)
+
 typedef enum { MODE_ECG, MODE_HRV, MODE_HR } stream_mode_t;
 typedef enum { LED_OFFLINE, LED_ONLINE, LED_STREAM } led_state_t;
 
@@ -107,6 +127,16 @@ static QueueHandle_t s_tx_queue;
 static int s_ble_fails = 0;                 // consecutive failed connect rounds
 static esp_timer_handle_t s_rescan_timer;   // backoff before the next scan
 static esp_timer_handle_t s_start_retry_timer;  // retry PMD start writes
+
+// SD spill state. The writer task owns the file handle; other tasks only
+// enqueue. Marker messages (first byte 0x01) open/close sessions in-order
+// with the frames around them.
+static bool s_sd_ok = false;
+static sdmmc_card_t *s_sd_card;
+static uint32_t s_boot_count = 0;
+static QueueHandle_t s_sd_queue;
+static volatile bool s_sd_session = false;  // gate for frame duplication
+static uint32_t s_seq_ecg = 0, s_seq_acc = 0, s_seq_hr = 0;
 
 static int64_t g_session_start_us = 0;
 static uint64_t g_ecg_total = 0;
@@ -193,6 +223,174 @@ static void send_status(const char *state, const char *detail)
     enqueue(out);
 }
 
+// ---- microSD spill (FatFs) --------------------------------------------------
+
+static uint32_t bump_boot_count(void)
+{
+    nvs_handle_t h;
+    uint32_t v = 0;
+    if (nvs_open("elduro", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_get_u32(h, "boot", &v);
+        v++;
+        nvs_set_u32(h, "boot", v);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    return v;
+}
+
+static bool sd_mount(void)
+{
+    spi_bus_config_t bus = {
+        .mosi_io_num = SD_PIN_MOSI,
+        .miso_io_num = SD_PIN_MISO,
+        .sclk_io_num = SD_PIN_SCK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    if (spi_bus_initialize(SPI2_HOST, &bus, SDSPI_DEFAULT_DMA) != ESP_OK) {
+        ESP_LOGW(TAG, "SD: spi bus init failed");
+        return false;
+    }
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
+    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot.gpio_cs = SD_PIN_CS;
+    slot.host_id = SPI2_HOST;
+    // Never auto-format: the card is prepared FAT32 (<=32 GB decision) and a
+    // format here would silently destroy field recordings.
+    esp_vfs_fat_sdmmc_mount_config_t mnt = {
+        .format_if_mount_failed = false,
+        .max_files = 4,
+        .allocation_unit_size = 16 * 1024,
+    };
+    esp_err_t err = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, &mnt, &s_sd_card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "SD: mount failed (%s) - no card? LED stays active", esp_err_to_name(err));
+        return false;
+    }
+    uint64_t total = 0, free_b = 0;
+    esp_vfs_fat_info(SD_MOUNT, &total, &free_b);
+    ESP_LOGI(TAG, ">> SD mounted: %llu MB total, %llu MB free (LED disabled: GPIO21 = SD CS)",
+             (unsigned long long)(total >> 20), (unsigned long long)(free_b >> 20));
+
+    // Boot self-test: append + fsync + stat, so a broken card is caught at
+    // boot instead of silently losing a field session.
+    mkdir(SD_MOUNT "/elduro", 0775);
+    FILE *f = fopen(SD_MOUNT "/elduro/boot.log", "a");
+    if (!f) {
+        ESP_LOGE(TAG, "SD: self-test open failed");
+        return false;
+    }
+    fprintf(f, "{\"boot\":%lu,\"uptime_ms\":%llu}\n",
+            (unsigned long)s_boot_count,
+            (unsigned long long)(esp_timer_get_time() / 1000));
+    fflush(f);
+    fsync(fileno(f));
+    fclose(f);
+    struct stat st;
+    if (stat(SD_MOUNT "/elduro/boot.log", &st) != 0 || st.st_size == 0) {
+        ESP_LOGE(TAG, "SD: self-test verify failed");
+        return false;
+    }
+    ESP_LOGI(TAG, ">> SD self-test OK (boot.log %ld bytes)", (long)st.st_size);
+    return true;
+}
+
+// Writer task owns the session file. Markers arrive in-queue-order with the
+// frames, so open/frames/close sequencing is race-free.
+static FILE *s_sd_file = NULL;
+static char s_sd_dir[64];
+
+static void sd_open_session(const char *mode)
+{
+    char path[96];
+    snprintf(s_sd_dir, sizeof(s_sd_dir), SD_MOUNT "/elduro/S%05lu-%llu",
+             (unsigned long)s_boot_count,
+             (unsigned long long)(esp_timer_get_time() / 1000));
+    mkdir(s_sd_dir, 0775);
+    snprintf(path, sizeof(path), "%s/header.json", s_sd_dir);
+    FILE *h = fopen(path, "w");
+    if (h) {
+        // No wall clock yet (SNTP is separate backlog): timestamps are the
+        // device-monotonic ns already carried by every frame, plus this
+        // boot/uptime anchor for later alignment against backend receive time.
+        fprintf(h,
+            "{\"type\":\"elduro-sd-spill\",\"version\":1,\"agent\":\"%s\","
+            "\"source\":\"%s\",\"mode\":\"%s\",\"boot\":%lu,\"uptime_ms\":%llu,"
+            "\"clock\":\"unsynced\",\"schema_version\":2}\n",
+            s_agent_id, s_source, mode, (unsigned long)s_boot_count,
+            (unsigned long long)(esp_timer_get_time() / 1000));
+        fflush(h);
+        fsync(fileno(h));
+        fclose(h);
+    }
+    snprintf(path, sizeof(path), "%s/frames.jsonl", s_sd_dir);
+    s_sd_file = fopen(path, "a");
+    ESP_LOGI(TAG, ">> SD session %s (%s)", s_sd_dir, s_sd_file ? "open" : "OPEN FAILED");
+}
+
+static void sd_close_session(void)
+{
+    if (!s_sd_file) return;
+    fflush(s_sd_file);
+    fsync(fileno(s_sd_file));
+    fclose(s_sd_file);
+    s_sd_file = NULL;
+    ESP_LOGI(TAG, ">> SD session closed (%s)", s_sd_dir);
+}
+
+static void sd_writer_task(void *arg)
+{
+    char *msg;
+    int since_sync = 0;
+    while (1) {
+        if (xQueueReceive(s_sd_queue, &msg, portMAX_DELAY) != pdTRUE) continue;
+        if (msg[0] == '\x01') {
+            if (strncmp(msg + 1, "OPEN:", 5) == 0) sd_open_session(msg + 6);
+            else sd_close_session();
+            free(msg);
+            since_sync = 0;
+            continue;
+        }
+        if (s_sd_file) {
+            fputs(msg, s_sd_file);
+            fputc('\n', s_sd_file);
+            if (++since_sync >= SD_SYNC_EVERY) {
+                fflush(s_sd_file);
+                fsync(fileno(s_sd_file));
+                since_sync = 0;
+            }
+        }
+        free(msg);
+    }
+}
+
+static void sd_marker(const char *fmt, const char *arg)
+{
+    if (!s_sd_ok) return;
+    char *m = malloc(32);
+    if (!m) return;
+    snprintf(m, 32, fmt, arg);
+    if (xQueueSend(s_sd_queue, &m, pdMS_TO_TICKS(100)) != pdTRUE) free(m);
+}
+
+// Duplicate a frame to the SD spill (writer task frees the copy).
+static void sd_spill(const char *json)
+{
+    if (!s_sd_ok || !s_sd_session) return;
+    char *cp = strdup(json);
+    if (!cp) return;
+    if (xQueueSend(s_sd_queue, &cp, 0) != pdTRUE) {
+        static uint32_t sd_dropped = 0;
+        if (++sd_dropped % 100 == 1) {
+            ESP_LOGW(TAG, ">> SD frame dropped (#%" PRIu32 ")", sd_dropped);
+        }
+        free(cp);
+    }
+}
+
 // ---- PMD / HR control ------------------------------------------------------
 
 static void hr_enable(bool on)
@@ -214,6 +412,11 @@ static void mark_streaming(void)
     // WS forward only needs ~10 kB/s, which survives low WiFi priority.
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
     led_refresh();
+    const char *mode_txt =
+        g_mode == MODE_HR ? "hr" : (g_mode == MODE_HRV ? "hrv" : "ecg");
+    // Open the SD spill session before frames start flowing (in-queue order).
+    sd_marker("\x01OPEN:%s", mode_txt);
+    s_sd_session = true;
     ESP_LOGI(TAG, ">> streaming (mode=%d)", g_mode);
     send_status("streaming",
                 g_mode == MODE_HR ? "HR" : (g_mode == MODE_HRV ? "ECG+ACC+HR" : "ECG+ACC"));
@@ -257,6 +460,7 @@ static void start_measurements(void)
     g_ecg_total = g_acc_total = 0;
     g_gaps = 0;
     g_have_prev_ecg = false;
+    s_seq_ecg = s_seq_acc = s_seq_hr = 0;
     if (g_mode == MODE_HR) {
         hr_enable(true);
         mark_streaming();
@@ -276,6 +480,10 @@ static void stop_measurements(void)
 {
     esp_timer_stop(s_start_retry_timer);
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    if (s_sd_session) {
+        s_sd_session = false;
+        sd_marker("\x01CLOSE%s", "");
+    }
     if (g_ble_ready && g_conn != BLE_HS_CONN_HANDLE_NONE) {
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_STOP_CMD, sizeof(ECG_STOP_CMD), NULL, NULL);
         ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_STOP_CMD, sizeof(ACC_STOP_CMD), NULL, NULL);
@@ -388,9 +596,9 @@ static void emit_ecg(const uint8_t *buf, uint16_t len)
     char *out = malloc(cap);
     if (!out) return;
     int p = snprintf(out, cap,
-        "{\"t\":\"ecg\",\"source\":\"%s\",\"ts_device_ns\":%" PRIu64
+        "{\"t\":\"ecg\",\"source\":\"%s\",\"seq\":%" PRIu32 ",\"ts_device_ns\":%" PRIu64
         ",\"ts_host_ns\":%" PRIu64 ",\"elapsed_ms\":%" PRIu64 ",\"samples\":[",
-        s_source, ts, host_ns, elapsed_ms);
+        s_source, ++s_seq_ecg, ts, host_ns, elapsed_ms);
     const uint8_t *s = buf + 10;
     for (int i = 0; i < nsamp; i++) {
         int32_t v = s[0] | (s[1] << 8) | (s[2] << 16);
@@ -400,6 +608,7 @@ static void emit_ecg(const uint8_t *buf, uint16_t len)
     }
     snprintf(out + p, cap - p, "],\"total\":%" PRIu64 ",\"gaps\":%" PRIu32 "}",
              g_ecg_total, g_gaps);
+    sd_spill(out);
     enqueue(out);
 }
 
@@ -477,14 +686,15 @@ static void emit_acc(const uint8_t *buf, uint16_t len)
     char *out = malloc(cap);
     if (!out) return;
     int p = snprintf(out, cap,
-        "{\"t\":\"acc\",\"source\":\"%s\",\"ts_device_ns\":%" PRIu64
-        ",\"ts_host_ns\":%" PRIu64 ",\"samples\":[", s_source, ts, host_ns);
+        "{\"t\":\"acc\",\"source\":\"%s\",\"seq\":%" PRIu32 ",\"ts_device_ns\":%" PRIu64
+        ",\"ts_host_ns\":%" PRIu64 ",\"samples\":[", s_source, ++s_seq_acc, ts, host_ns);
     for (int i = 0; i < ntri; i++) {
         p += snprintf(out + p, cap - p, i ? ",[%" PRId32 ",%" PRId32 ",%" PRId32 "]"
                                           : "[%" PRId32 ",%" PRId32 ",%" PRId32 "]",
                       tri[i][0], tri[i][1], tri[i][2]);
     }
     snprintf(out + p, cap - p, "],\"total\":%" PRIu64 "}", g_acc_total);
+    sd_spill(out);
     enqueue(out);
 }
 
@@ -510,8 +720,8 @@ static void emit_hr(const uint8_t *d, int len)
     char *out = malloc(256);
     if (!out) return;
     int p = snprintf(out, 256,
-        "{\"t\":\"hr\",\"source\":\"%s\",\"ts\":%" PRIu64 ",\"bpm\":%u,\"rr\":[",
-        s_source, elapsed_ms, bpm);
+        "{\"t\":\"hr\",\"source\":\"%s\",\"seq\":%" PRIu32 ",\"ts\":%" PRIu64 ",\"bpm\":%u,\"rr\":[",
+        s_source, ++s_seq_hr, elapsed_ms, bpm);
     bool first = true;
     if (flags & 0x10) {
         while (i + 2 <= len) {
@@ -523,6 +733,7 @@ static void emit_hr(const uint8_t *d, int len)
         }
     }
     snprintf(out + p, 256 - p, "]}");
+    sd_spill(out);
     enqueue(out);
 }
 
@@ -705,6 +916,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         g_hr_val = 0;
         g_ble_ready = false;
         if (g_streaming) send_status("error", "H10 link lost");
+        // Close the spill segment on link loss so it is flushed to the card;
+        // a reconnect opens a fresh segment directory (frames carry seq +
+        // device timestamps, so segments merge cleanly later).
+        if (s_sd_session) {
+            s_sd_session = false;
+            sd_marker("\x01CLOSE%s", "");
+        }
         g_streaming = false;
         led_refresh();
         if (g_want_stream) schedule_scan();
@@ -810,7 +1028,17 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(esp_timer_create(&retry_args, &s_start_retry_timer));
 
-    xTaskCreate(led_task, "led", 4096, NULL, 4, NULL);
+    // microSD store-and-forward. GPIO21 is shared between the SD CS and the
+    // amber LED, so the LED task only runs when no card is mounted.
+    s_boot_count = bump_boot_count();
+    s_sd_ok = sd_mount();
+    if (s_sd_ok) {
+        s_sd_queue = xQueueCreate(256, sizeof(char *));
+        xTaskCreate(sd_writer_task, "sdwr", 6144, NULL, 5, NULL);
+    } else {
+        xTaskCreate(led_task, "led", 4096, NULL, 4, NULL);
+    }
+
     xTaskCreate(ws_sender_task, "wstx", 8192, NULL, 6, NULL);
     xTaskCreate(net_task, "net", 8192, NULL, 5, NULL);
 

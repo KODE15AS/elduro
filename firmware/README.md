@@ -64,5 +64,28 @@ WiFi credentials live in `main/wifi_creds.h` (gitignored); copy
 `main/wifi_creds.h.example` and fill in your SSID/password. The H10 needs a
 ~5-35 s warm-up before it emits the first ECG/HR frame after start.
 
-Next steps: PSRAM ring buffer + microSD store-and-forward (FatFs), deferred
-until the card arrives; then a second H10 for the dual-sensor stage.
+## microSD store-and-forward (chat 4)
+
+The Sense board's microSD slot (FAT32, <= 32 GB) is the field spill per
+frame-schema section 6:
+
+- Pins: CS=GPIO21, SCK=GPIO7, MISO=GPIO8, MOSI=GPIO9 (SPI2). **GPIO21 is
+  shared with the amber status LED**, so when a card is mounted the LED task
+  is disabled and the LED instead flickers with SD activity. Session status
+  lives in the web UI.
+- Every session writes `/sdcard/elduro/S<boot>-<uptime_ms>/` with
+  `header.json` (agent, source, mode, boot count, `clock: unsynced`) and an
+  append-only `frames.jsonl` - the exact wire JSON plus a per-stream `seq`,
+  fsync'ed every 50 frames, safe to truncate at any byte. Link loss closes
+  the segment; reconnect opens a new one (segments merge on seq + device
+  timestamps).
+- Boot runs a self-test (append + fsync + stat on `elduro/boot.log`); a dead
+  card is reported at boot, and the firmware falls back to LED-only operation.
+- The card is never auto-formatted.
+- FatFs long filenames are enabled (`CONFIG_FATFS_LFN_HEAP`).
+
+Still open: upload/resume of spill segments over WS + backend dedup/merge
+(depends on the archive-encoding decision), and the PSRAM ring buffer.
+
+Next steps: spill upload/resume, PSRAM ring buffer, SNTP wall clock; then a
+second H10 for the dual-sensor stage.
