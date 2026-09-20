@@ -154,13 +154,23 @@ Robusthetsfiks 20.09 (strømbrudd-test): brå frakobling (USB-C trukket midt i
    reboot/strømbrudd uten at bruker må trykke START. Deployet, men ennå ikke
    feltverifisert (belte-problemet nedenfor kom i veien for en ren hot-swap).
 
-Åpent belte-problem 20.09 (ikke løst): etter mye testing gikk H10 nr. 1 fra
-3+ min stabil strømming til å terminere hver tilkobling (`reason=531`) ~1 s
-etter «armed», med batteri som svinger 90/18/−1 %. Mistanke: knappcelle
-(CR2025) brownouter under PMD-last, eller fastlåst belte. Neste økt: bytt
-CR2025 og/eller test H10 nr. 2 for å isolere belte vs. bro. Firmwaren
-håndterer det pent nå (backoff + tydelig UI-beskjed), men kan ikke fikse en
-belte som browner ut.
+Belte-/bro-vranglås 20.09 – LØST og forstått: etter mye testing gikk H10 nr. 1
+fra 3+ min stabil strømming til å terminere hver tilkobling (`reason=531`) ~1 s
+etter «armed», med batteri som svingte 90/18/−1 %. Dobbel vranglås: (a) beltet
+i en fastlåst tilstand (ga søppel-batteriavlesninger + 531), (b) ESP32-firmwaren
+med hengende BLE-tilstand (skann-rutinen bailet etter `cmd: start`). Kur:
+sensor av stroppen 30 s (belte) + ESP32-reboot (bro). Etter det: ren tilkobling,
+batteri 100 %, stabil strøm. Det var altså IKKE en døende knappcelle - de ville
+avlesningene var symptom på vranglåsen.
+
+**Backend-auto-gjenopptak FELTVERIFISERT 20.09:** ESP32-reboot → re-registrering
+→ backend gjensendte START automatisk (`resume start ...` i loggen) → strøm
+gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
+
+Åpent (forbedring, ikke blokker): ESP32-firmwaren kan låse BLE-tilstanden etter
+en langvarig 531-storm så den trenger reboot. Verdig selvhelbredelse: reboot
+BLE-stacken (eller `esp_restart()`) hvis START ikke fører til skanning/tilkobling
+innen ~15 s. Systemet helbreder seg i dag via reboot + auto-gjenopptak.
 
 ## Historikk (daterte tillegg, immutable)
 
