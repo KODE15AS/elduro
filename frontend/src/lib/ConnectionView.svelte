@@ -19,6 +19,7 @@
   let stats: Record<string, Record<string, StreamStat>> = $state({})
   let telemetry: Record<string, any> = $state({})
   let modes: Record<string, string> = $state({})
+  let pending: Record<string, boolean> = $state({}) // optimistisk: satt ved klikk
   let tick = $state(0) // driver re-render av ratene
 
   function onFrame(m: any) {
@@ -40,7 +41,18 @@
 
   onMount(() => {
     register(onFrame)
-    const iv = setInterval(() => tick++, 1000)
+    const iv = setInterval(() => {
+      tick++
+      // Rydd optimistisk pending når en definitiv status har kommet: strømmer
+      // (rammer flyter) eller økten tok ikke / ble avsluttet.
+      for (const id of Object.keys(pending)) {
+        if (!pending[id]) continue
+        const st = onstatus(id)
+        if (isStreaming(id) || st?.state === 'error' || st?.state === 'stopped') {
+          pending[id] = false
+        }
+      }
+    }, 1000)
     return () => clearInterval(iv)
   })
 
@@ -74,9 +86,11 @@
   }
 
   function start(src: string) {
+    pending[src] = true // umiddelbar respons; status/rammer overtar straks
     send({ t: 'start', source: src, mode: modes[src] ?? 'hrv', duration_s: 0 })
   }
   function stop(src: string) {
+    pending[src] = false
     send({ t: 'stop', source: src })
   }
   function isStreaming(src: string): boolean {
@@ -84,6 +98,19 @@
     const s = stats[src]
     if (!s) return false
     return Object.values(s).some((st) => performance.now() - st.lastMs < 3000)
+  }
+  // «Busy» = en økt er ønsket/i gang (ren funksjon - ingen mutasjon i render).
+  // Optimistisk pending gir umiddelbar knapperespons; status og rammer holder
+  // den korrekt videre. pending ryddes i tick-intervallet.
+  function busy(src: string, st: Status): boolean {
+    void tick
+    return (
+      pending[src] ||
+      isStreaming(src) ||
+      st?.state === 'streaming' ||
+      st?.state === 'scanning' ||
+      st?.state === 'connecting'
+    )
   }
 </script>
 
@@ -116,7 +143,7 @@
               <option value="ecg">ecg - EKG + ACC</option>
               <option value="hr">hr - kun HR/RR</option>
             </select>
-            {#if isStreaming(id) || st?.state === 'streaming' || st?.state === 'scanning' || st?.state === 'connecting'}
+            {#if busy(id, st)}
               <button class="stop" onclick={() => stop(id)}>STOPP</button>
             {:else}
               <button class="start" onclick={() => start(id)}>START</button>
