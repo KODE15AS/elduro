@@ -205,14 +205,15 @@ static void ws_sender_task(void *arg)
 }
 
 // Status for the UI (same shape as the USB agent). Deduplicated so the scan
-// loop cannot spam the browser.
+// loop cannot spam the browser. s_status_last nullstilles ved ny økt slik at
+// hver START gir en fersk statusprogresjon (ikke undertrykt av forrige økt).
+static char s_status_last[64];
 static void send_status(const char *state, const char *detail)
 {
-    static char last[64];
     char key[64];
     snprintf(key, sizeof(key), "%s|%s", state, detail ? detail : "");
-    if (strcmp(key, last) == 0) return;
-    strncpy(last, key, sizeof(last) - 1);
+    if (strcmp(key, s_status_last) == 0) return;
+    strncpy(s_status_last, key, sizeof(s_status_last) - 1);
 
     char *out = malloc(224);
     if (!out) return;
@@ -539,6 +540,8 @@ static void handle_command(const char *data, int len)
         ESP_LOGI(TAG, "cmd: start (mode=%d)", g_mode);
         g_want_stream = true;
         s_ble_fails = 0;
+        s_status_last[0] = '\0';  // fersk statusprogresjon for denne økten
+        send_status("scanning", "starter - søker Polar H10");
         if (g_ble_ready) start_measurements();
         else ble_connect_wanted();
     } else if (strnstr(data, "\"t\":\"stop\"", len)) {

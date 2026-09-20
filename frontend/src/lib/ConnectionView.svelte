@@ -78,6 +78,54 @@
     return t
   }
 
+  // Tilkoblingstrinn ("lamper"): utleder hvor i kjeden en kilde står, så det
+  // er synlig hvor det evt. stopper. Trinn: bro online -> søker belte ->
+  // kobler -> armerer -> strømmer. Hvert trinn er 'done' | 'active' | 'wait' | 'err'.
+  const STEPS = [
+    { key: 'bridge', label: 'ESP32-bro online' },
+    { key: 'search', label: 'Søker belte' },
+    { key: 'connect', label: 'Kobler til H10' },
+    { key: 'warmup', label: 'Oppvarming' },
+    { key: 'stream', label: 'Strømmer' },
+  ]
+  // Trinn-tilstand når ingen bro er tilkoblet ennå (tom-visning): vi leter
+  // aktivt etter ESP32-broen, resten venter.
+  const SEARCHING_BRIDGE: Record<string, string> = {
+    bridge: 'active', search: 'wait', connect: 'wait', warmup: 'wait', stream: 'wait',
+  }
+  function steps(id: string, st: Status): Record<string, string> {
+    void tick
+    const tm = tele(id)
+    const streaming = isStreaming(id) || st?.state === 'streaming'
+    const anyFrame = streaming
+    const s: Record<string, string> = {}
+    // Bro online: telemetri mottatt (ESP32) eller kilden finnes (raven-agent).
+    const bridgeUp = !!tm || sourceIds.includes(id)
+    s.bridge = bridgeUp ? 'done' : 'wait'
+    // BLE-tilstand fra telemetri (ESP32) eller status.
+    const bleConn = tm?.ble_connected || st?.state === 'streaming'
+    const scanning = st?.state === 'scanning' || (busy(id, st) && !bleConn && !streaming)
+    const connecting = st?.state === 'connecting'
+    const err = st?.state === 'error'
+
+    if (streaming) {
+      s.search = 'done'; s.connect = 'done'
+      // Oppvarming: BLE oppe, men EKG/HR-rammer ikke begynt (H10 ~5-35 s).
+      s.warmup = anyFrame ? 'done' : 'active'
+      s.stream = anyFrame ? 'active' : 'wait'
+    } else if (bleConn) {
+      s.search = 'done'; s.connect = 'done'; s.warmup = 'active'; s.stream = 'wait'
+    } else if (connecting) {
+      s.search = 'done'; s.connect = err ? 'err' : 'active'; s.warmup = 'wait'; s.stream = 'wait'
+    } else if (scanning) {
+      s.search = err ? 'err' : 'active'; s.connect = 'wait'; s.warmup = 'wait'; s.stream = 'wait'
+    } else {
+      s.search = 'wait'; s.connect = 'wait'; s.warmup = 'wait'; s.stream = 'wait'
+    }
+    if (err && !connecting) s.search = 'err'
+    return s
+  }
+
   function friendlyLabel(id: string): string {
     if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (svak, kun nød)'
     if (id.startsWith('raven:')) return 'Raven - ASUS BT-600 USB (benk)'
@@ -115,12 +163,21 @@
 </script>
 
 <main class="conn">
-  {#if !sourceIds.length}
+    {#if !sourceIds.length}
     <section class="card empty">
-      <h2>Ingen agenter tilkoblet</h2>
+      <h2>Søker etter ESP32-broen …</h2>
+      <ol class="steps">
+        {#each STEPS as step (step.key)}
+          <li class={SEARCHING_BRIDGE[step.key]}>
+            <span class="lamp"></span>
+            <span class="lbl">{step.label}</span>
+          </li>
+        {/each}
+      </ol>
       <p>
-        ESP32-broen kobler seg til via hotspoten (WiFi må være på), og
-        raven-agenten via USB-adapteren. Ingen av dem er online nå.
+        Broen kobler seg til backend via iPhone-hotspoten (WiFi må være på, og
+        internettdeling-skjermen bør stå åpen). Så snart den melder seg, dukker
+        kortet opp her. Raven-agenten kommer via USB-adapteren.
       </p>
     </section>
   {/if}
@@ -152,7 +209,23 @@
           <p class="status" class:err={st?.state === 'error'}>
             {st ? `${st.state}${st.detail ? ' - ' + st.detail : ''}` : 'idle'}
           </p>
-          <p class="hint">Nyeste start vinner: en start her stopper andre kilder (H10 = én sentral).</p>
+          {#each [steps(id, st)] as sp}
+            <ol class="steps">
+              {#each STEPS as step (step.key)}
+                <li class={sp[step.key]}>
+                  <span class="lamp"></span>
+                  <span class="lbl">{step.key === 'bridge' && !id.startsWith('esp32-') ? 'Agent online' : step.label}</span>
+                </li>
+              {/each}
+            </ol>
+            {#if sp.search === 'active'}
+              <p class="hint">Søker etter beltet - ta på H10 med fuktede elektroder hvis det ikke dukker opp.</p>
+            {:else if sp.warmup === 'active'}
+              <p class="hint">Tilkoblet - H10 varmer opp (~5-35 s før første EKG).</p>
+            {:else}
+              <p class="hint">Nyeste start vinner: en start her stopper andre kilder (H10 = én sentral).</p>
+            {/if}
+          {/each}
         </div>
 
         <div class="block">
@@ -265,15 +338,52 @@
   button.start, button.stop {
     border: 0;
     border-radius: 8px;
-    padding: 6px 18px;
+    padding: 6px 20px;
     cursor: pointer;
     color: #fff;
     font-family: var(--font-display);
     letter-spacing: 1.5px;
     font-size: 13px;
   }
-  button.start { background: var(--color-accent); }
-  button.stop { background: var(--color-heart); }
+  /* Eksplisitt fokus-stil: unngå nettleserens grå fokusprikk over teksten. */
+  button.start:focus-visible, button.stop:focus-visible {
+    outline: 2px solid var(--color-ink, #111);
+    outline-offset: 2px;
+  }
+  button.start:focus, button.stop:focus { outline: none; }
+  button.start { background: #0a9a4a; }
+  button.stop { background: var(--color-heart, #cb333b); }
+
+  .steps {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 12px 0 6px;
+    padding: 0;
+  }
+  .steps li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-slate);
+  }
+  .steps .lamp {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--color-disabled, #cfcfcf);
+    flex: none;
+    transition: background 0.2s;
+  }
+  .steps li.done .lamp { background: #0a9a4a; }
+  .steps li.done .lbl { color: var(--color-ink, #222); }
+  .steps li.active .lamp { background: #e8a41c; animation: pulse 1s ease-in-out infinite; }
+  .steps li.active .lbl { color: var(--color-ink, #222); font-weight: 600; }
+  .steps li.err .lamp { background: var(--color-heart, #cb333b); }
+  .steps li.err .lbl { color: var(--color-heart, #cb333b); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .status { margin: 8px 0 2px; font-size: 13px; }
   .status.err { color: var(--color-error); font-weight: 600; }
   .hint { margin: 2px 0 0; font-size: 11px; color: var(--color-slate); }
