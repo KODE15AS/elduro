@@ -180,6 +180,14 @@ bus-drevet minnepinne (krever ekstern 5 V på VBus + tapt native-USB), men
 microSD på Sense-kortet (bestilt) er den rene veien. Konkret startpunkt +
 innkjøpsanbefaling i doc (til beslutning, norm «bestilling» – ikke bestilt).
 
+Vurdering 20.09 – **alternative CPU-er til ESP32-S3:**
+[docs/hardware/mcu-alternativer-vurdering.md](../docs/hardware/mcu-alternativer-vurdering.md).
+Behold ESP32-S3 nå (stabilisert). Lavrisiko-eksperiment med høy verdi: kjør den
+eksisterende Rust-agenten på en Pi Zero 2 W (null firmware, fjerner coex-
+klassen, mot strøm/størrelse-kostnad). Beste felt-RF på sikt: nRF5340+nRF7002
+(dedikert BLE-radio + 3-tråds coex), men Zephyr + tilpasset kort = høy innsats.
+XIAO ESP32-C6 og Pico 2 W er sidegrades (fortsatt én delt radio).
+
 ## Historikk (daterte tillegg, immutable)
 
 | Dato | Overgang | Fil |
