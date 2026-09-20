@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import ConnectionView from './lib/ConnectionView.svelte'
   import EcgView from './lib/EcgView.svelte'
   import HrvView from './lib/HrvView.svelte'
   import Landing from './lib/Landing.svelte'
@@ -8,15 +9,18 @@
   // Path-based routing. The app stays a single persistent-mounted SPA; the
   // route only selects which pane is visible, so live captures never tear down
   // when navigating between tools. (HR Compare ble fjernet 20.09.2026 - den
-  // var et chat-1-verktoey for radiosammenligning og hadde utspilt rollen.)
-  type View = 'home' | 'ecg' | 'hrv'
+  // var et chat-1-verktoey for radiosammenligning og hadde utspilt rollen.
+  // All øktstyring bor på TILKOBLING-fanen fra 20.09.2026.)
+  type View = 'home' | 'conn' | 'ecg' | 'hrv'
   const PATH_TO_VIEW: Record<string, View> = {
     '/': 'home',
+    '/tilkobling': 'conn',
     '/raw-ecg': 'ecg',
     '/rhythm-hrv': 'hrv',
   }
   const VIEW_TO_PATH: Record<View, string> = {
     home: '/',
+    conn: '/tilkobling',
     ecg: '/raw-ecg',
     hrv: '/rhythm-hrv',
   }
@@ -93,7 +97,7 @@
         detail: m.detail ?? '',
         device: m.device ?? '',
       }
-    } else if (m.t === 'ecg' || m.t === 'acc' || m.t === 'hr') {
+    } else if (m.t === 'ecg' || m.t === 'acc' || m.t === 'hr' || m.t === 'telemetry') {
       for (const fn of ecgSubs) (fn as (x: any) => void)(m)
     }
   }
@@ -113,6 +117,9 @@
   </div>
   <div class="subtitle">POLAR H10 SIGNAL LAB</div>
   <div class="tabs">
+    <button class:active={view === 'conn'} onclick={() => go('conn')}>
+      TILKOBLING
+    </button>
     <button class:active={view === 'ecg'} onclick={() => go('ecg')}>
       RAW ECG
     </button>
@@ -129,6 +136,14 @@
 
 <div class="pane" style:display={view === 'home' ? 'contents' : 'none'}>
   <Landing onopen={go} />
+</div>
+<div class="pane" style:display={view === 'conn' ? 'contents' : 'none'}>
+  <ConnectionView
+    sources={sources}
+    send={sendCmd}
+    register={registerEcg}
+    onstatus={ecgStatusFor}
+  />
 </div>
 <div class="pane" style:display={view === 'ecg' ? 'contents' : 'none'}>
   <EcgView

@@ -20,9 +20,10 @@
   // live ECG signal path (baseline, detection, motor, drawing) is identical.
   const scope = new EcgScope()
 
+  // Øktstyring bor på TILKOBLING-fanen (20.09.2026); denne visningen følger
+  // aktiv strøm for valgt kilde og har kun visningskontroller (pause, fart).
   let selected = $state('')
-  let wantRec = $state(false)
-  let recStartMs = 0 // when RECORD was pressed, for the warmup overlay timer
+  let streamingSince = 0 // når status ble 'streaming', for oppvarmings-overlay
   let paused = $state(false)
   let speed = $state(25)
   let ecgTotal = $state(0)
@@ -47,10 +48,8 @@
 
   const sourceIds = $derived(Object.keys(sources))
   const status = $derived(selected ? onstatus(selected) : null)
-  const recording = $derived(wantRec || ecgFresh)
-  const busyOther = $derived(
-    !!status && status.state === 'streaming' && !ecgFresh && !wantRec,
-  )
+  const recording = $derived(ecgFresh)
+  const live = $derived(!!status && status.state === 'streaming')
 
   function friendlyLabel(id: string): string {
     if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
@@ -104,10 +103,11 @@
     const loop = () => {
       const perf = performance.now()
       ecgFresh = perf - scope.lastEcgMs < 1500
-      // The motor follows `recording` (RECORD pressed here OR live frames from
-      // a session another client started), so an adopted stream renders too.
-      // STOP/PAUSE still freeze it.
-      scope.tick(perf, (wantRec || ecgFresh) && !paused)
+      if (live && !streamingSince) streamingSince = perf
+      if (!live) streamingSince = 0
+      // The motor follows live frames (sessions are started from the
+      // CONNECTION tab); PAUSE freezes it locally.
+      scope.tick(perf, ecgFresh && !paused)
       hrBpm = scope.hrBpm
       drawEcg()
       drawAcc()
@@ -132,27 +132,16 @@
     hrBpm = null
   }
 
-  function start() {
-    if (!selected) return
+  // Bytte av kilde (dual-H10 senere) skal gi et rent skop.
+  $effect(() => {
+    void selected
     resetBuffers()
-    paused = false
-    wantRec = true
-    recStartMs = performance.now()
-    send({ t: 'start', source: selected, mode: 'ecg', duration_s: 0 })
-  }
-  function stop() {
-    wantRec = false
-    paused = false
-    if (selected) send({ t: 'stop', source: selected })
-  }
+  })
+
   function togglePause() {
     if (paused) { scope.requestAnchor(); paused = false }
     else paused = true
   }
-
-  $effect(() => {
-    if (status?.state === 'error') wantRec = false
-  })
 
   function prepare(canvas: HTMLCanvasElement): [CanvasRenderingContext2D, number, number] | null {
     const dpr = window.devicePixelRatio || 1
@@ -182,18 +171,18 @@
       // until it enters "measuring" state, which can take ~30 s with dry
       // electrodes. Show a friendly status instead of a blank scrolling grid.
       const cx = w / 2, cy = h / 2
-      const tsec = wantRec && recStartMs ? (performance.now() - recStartMs) / 1000 : 0
+      const tsec = live && streamingSince ? (performance.now() - streamingSince) / 1000 : 0
       const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350)
       ctx.save()
       ctx.textAlign = 'center'
-      if (wantRec) {
+      if (live) {
         ctx.fillStyle = `rgba(203,51,59,${0.2 + 0.55 * pulse})`
         ctx.beginPath(); ctx.arc(cx, cy - 16, 8 + 4 * pulse, 0, Math.PI * 2); ctx.fill()
       }
       ctx.fillStyle = '#444'
       ctx.font = 'bold 17px sans-serif'
-      ctx.fillText(wantRec ? 'Polar H10 preparing signal...' : 'press RECORD to start', cx, cy + 16)
-      if (wantRec) {
+      ctx.fillText(live ? 'Polar H10 preparing signal...' : 'start the session from the CONNECTION tab', cx, cy + 16)
+      if (live) {
         ctx.fillStyle = '#888'
         ctx.font = '13px sans-serif'
         ctx.fillText(
@@ -259,21 +248,16 @@
   <div class="bar">
     <label>
       Source
-      <select bind:value={selected} disabled={recording}>
+      <select bind:value={selected}>
         {#if !sourceIds.length}
-          <option value="">no native agent connected</option>
+          <option value="">no agent connected</option>
         {/if}
         {#each sourceIds as id (id)}
           <option value={id}>{friendlyLabel(id)}</option>
         {/each}
       </select>
     </label>
-    {#if recording}
-      <button class="stop" onclick={stop}>STOP</button>
-      <button class="pause" onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
-    {:else}
-      <button class="rec" disabled={!selected} onclick={start}>RECORD</button>
-    {/if}
+    <button class="pause" disabled={!recording && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
     <span class="bpm">&hearts; <b>{hrBpm ?? '--'}</b> bpm</span>
     <div class="speed">
       {#each SPEEDS as s (s)}
@@ -283,13 +267,11 @@
     </div>
     <div class="stats">
       {#if status}
-        <span class="state" class:err={status.state === 'error'} class:warn={busyOther}>
-          {#if busyOther}
-            strap busy with another capture - press RECORD for raw ECG
-          {:else}
-            {status.state}{status.detail ? ' - ' + status.detail : ''}
-          {/if}
+        <span class="state" class:err={status.state === 'error'}>
+          {status.state}{status.detail ? ' - ' + status.detail : ''}
         </span>
+      {:else}
+        <span class="state">idle - start from the CONNECTION tab</span>
       {/if}
       <span title="Total ECG samples received this session">{ecgTotal.toLocaleString()} ECG samples</span>
       <span title="Seconds of ECG recorded">{(ecgTotal / ECG_FS).toFixed(1)} s rec</span>
@@ -346,18 +328,12 @@
     cursor: pointer;
     color: #fff;
   }
-  button.rec {
-    background: var(--color-accent);
-  }
-  button.rec:disabled {
-    background: var(--color-disabled);
-    cursor: not-allowed;
-  }
-  button.stop {
-    background: var(--color-heart);
-  }
   button.pause {
     background: var(--color-slate);
+  }
+  button.pause:disabled {
+    background: var(--color-disabled);
+    cursor: not-allowed;
   }
   .bpm {
     font-size: 14px;

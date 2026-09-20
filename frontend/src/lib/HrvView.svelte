@@ -39,18 +39,16 @@
   let error = $state('')
   let stripStart = $state(0)
 
-  // live capture state
+  // live capture state. Øktstyring bor på TILKOBLING-fanen (20.09.2026);
+  // denne visningen følger aktiv strøm for valgt kilde.
   let selected = $state('')
-  let wantLive = $state(false)
   let lastRr = $state<number | null>(null)
   let instHr = $state<number | null>(null)
   const sourceIds = $derived(Object.keys(sources))
   const liveStatus = $derived(selected && onstatus ? onstatus(selected) : null)
   let liveFresh = $state(false)
   let hrFresh = $state(false)
-  // The button reflects the user's intent only; a foreign raw-ECG stream can set
-  // liveFresh, but that must not hide GO LIVE (which starts an HRV session).
-  const running = $derived(wantLive)
+  const running = $derived(liveFresh)
 
   // Auto-select a sensible source (same pattern as EcgView): without this the
   // selection resets to '' on every tab switch and GO LIVE stays disabled.
@@ -569,20 +567,6 @@
     stripStart = Math.max(0, Math.min(t - STRIP_WIN / 2, Math.max(0, tMax() - STRIP_WIN)))
   }
 
-  function goLive() {
-    if (!send || !selected) return
-    error = ''
-    resetLive()
-    paused = false
-    wantLive = true
-    mode = 'live'
-    send({ t: 'start', source: selected, mode: 'hrv', duration_s: 0 })
-  }
-  function stopLive() {
-    if (send && selected) send({ t: 'stop', source: selected })
-    wantLive = false
-    paused = false
-  }
   function togglePause() {
     if (paused) { scope.requestAnchor(); paused = false }
     else paused = true
@@ -590,8 +574,12 @@
   function toLive() {
     mode = 'live'
   }
+  // Bytte av kilde (dual-H10 senere) skal gi et rent skop og RR-buffer.
+  $effect(() => {
+    void selected
+    resetLive()
+  })
   function toSample() {
-    if (running) stopLive()
     mode = 'sample'
     if (!bundle || bundle._axisRight !== undefined) loadSample()
   }
@@ -605,9 +593,8 @@
       liveFresh = perf - lastHrMs < 2500 || perf - scope.lastEcgMs < 2500
       hrFresh = perf - lastHrMs < 3000
       if (mode === 'live') {
-        // Follow live frames too (a session another client started), same
-        // adoption behaviour as EcgView.
-        scope.tick(perf, (wantLive || liveFresh) && !paused)
+        // Follow the active stream (sessions start from the CONNECTION tab).
+        scope.tick(perf, liveFresh && !paused)
         if (perf - lastWinMs > 350) {
           liveWins = computeLiveWindows(rrTimes, rrVals, scope.ecgNewestT)
           lastWinMs = perf
@@ -638,29 +625,24 @@
     </div>
 
     {#if mode === 'live'}
-      <select bind:value={selected} disabled={running}>
+      <select bind:value={selected}>
         {#each sourceIds as id}
           <option value={id}>{friendlyLabel(id)}</option>
         {/each}
       </select>
-      {#if !running}
-        <button class="go" onclick={goLive} disabled={!selected}>GO LIVE</button>
-      {:else}
-        <button class="stop" onclick={stopLive}>STOP</button>
-        <button class="pause" onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
-        <span class="speeds">
-          {#each SPEEDS as s}
-            <button class:active={speed === s} onclick={() => (speed = s)}>{s}</button>
-          {/each}
-          <span class="unit">mm/s</span>
-        </span>
-      {/if}
+      <button class="pause" disabled={!running && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
+      <span class="speeds">
+        {#each SPEEDS as s}
+          <button class:active={speed === s} onclick={() => (speed = s)}>{s}</button>
+        {/each}
+        <span class="unit">mm/s</span>
+      </span>
       <span class="metric beat">
         <span class="heart" class:on={hrFresh}>&hearts;</span>
         <b>{instHr ?? '--'}</b> bpm &middot; RR <b>{lastRr ?? '--'}</b> ms
       </span>
       <span class="metric live-state">
-        {#if running && liveFresh && !hrFresh}waiting for native RR (HR){:else}{liveFresh ? 'streaming' : (liveStatus?.state ?? 'idle')}{/if}
+        {#if running && !hrFresh}waiting for native RR (start an hrv session from CONNECTION){:else}{liveFresh ? 'streaming' : ((liveStatus?.state ?? 'idle') + ' - start from the CONNECTION tab')}{/if}
       </span>
     {/if}
 
@@ -739,15 +721,13 @@
   }
   .modeswitch button.active { background: var(--color-ink, #111); color: #fff; }
   select { padding: 4px 6px; border: 1px solid var(--color-line, #ccc); border-radius: 6px; }
-  .go, .stop {
+  .live-state { text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+  .pause {
     border: 0; border-radius: 6px; padding: 5px 14px; cursor: pointer; color: #fff;
     font-family: var(--font-display, sans-serif); letter-spacing: 1px; font-size: 12px;
+    background: var(--color-slate, #555);
   }
-  .go { background: var(--color-good, #0a9a4a); }
-  .stop { background: var(--color-heart, #cb333b); }
-  .go:disabled { opacity: 0.5; cursor: default; }
-  .live-state { text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
-  .pause { background: var(--color-slate, #555); }
+  .pause:disabled { opacity: 0.5; cursor: default; }
   .speeds { display: inline-flex; align-items: center; gap: 3px; }
   .speeds button {
     border: 1px solid var(--color-line, #ccc); background: #fff; border-radius: 5px;

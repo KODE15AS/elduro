@@ -69,6 +69,7 @@ static const char *TAG = "elduro";
 #define PMD_DATA_VAL  0x0032
 #define PMD_DATA_CCCD 0x0033
 #define HRM_UUID16    0x2A37
+#define BATT_UUID16   0x2A19  // Battery Level (Battery Service 0x180F)
 
 static const uint8_t ECG_START_CMD[] = {
     0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0e, 0x00,
@@ -119,6 +120,8 @@ static volatile bool g_ws_up = false;
 
 static uint16_t g_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t g_hr_val = 0;               // HR Measurement value handle (0 = not found)
+static char g_device_name[32];              // belt name from the advertisement
+static int g_battery = -1;                  // belt battery %, -1 = unknown
 static volatile bool g_ble_ready = false;
 static volatile bool g_want_stream = false;
 static volatile bool g_streaming = false;
@@ -802,21 +805,42 @@ static void ble_release(void)
     send_status("stopped", "user");
 }
 
+static void arm_link(void)
+{
+    g_ble_ready = true;
+    ESP_LOGI(TAG, ">> H10 armed (hr_val=0x%04x batt=%d%%); %s",
+             g_hr_val, g_battery, g_want_stream ? "starting" : "releasing (idle)");
+    if (g_want_stream) {
+        start_measurements();
+    } else if (g_conn != BLE_HS_CONN_HANDLE_NONE) {
+        // Session was cancelled while we connected: free the belt.
+        ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}
+
+static int on_batt_read(uint16_t ch, const struct ble_gatt_error *err,
+                        struct ble_gatt_attr *attr, void *arg)
+{
+    if (err->status == 0 && attr && attr->om && OS_MBUF_PKTLEN(attr->om) >= 1) {
+        uint8_t b = 0;
+        ble_hs_mbuf_to_flat(attr->om, &b, 1, NULL);
+        g_battery = b;
+        return 0;  // EDONE follows and arms
+    }
+    arm_link();  // EDONE or error: proceed regardless
+    return 0;
+}
+
 static int on_hrm_disc(uint16_t ch, const struct ble_gatt_error *err,
                        const struct ble_gatt_chr *chr, void *arg)
 {
     if (err->status == 0 && chr) {
         g_hr_val = chr->val_handle;
     } else {
-        // BLE_HS_EDONE (or error): discovery finished; arm the link.
-        g_ble_ready = true;
-        ESP_LOGI(TAG, ">> H10 armed (hr_val=0x%04x); %s",
-                 g_hr_val, g_want_stream ? "starting" : "releasing (idle)");
-        if (g_want_stream) {
-            start_measurements();
-        } else if (g_conn != BLE_HS_CONN_HANDLE_NONE) {
-            // Session was cancelled while we connected: free the belt.
-            ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+        // Discovery finished; read the belt battery, then arm the link.
+        static const ble_uuid16_t batt = BLE_UUID16_INIT(BATT_UUID16);
+        if (ble_gattc_read_by_uuid(g_conn, 1, 0xffff, &batt.u, on_batt_read, NULL) != 0) {
+            arm_link();
         }
     }
     return 0;
@@ -861,6 +885,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         if (strstr(name, "Polar")) {
             if (!g_want_stream) return 0;  // idle: leave the belt alone
+            strncpy(g_device_name, name, sizeof(g_device_name) - 1);
             if (event->disc.rssi < RSSI_MIN_DBM) {
                 // Too weak to survive connect establishment under coex.
                 // Throttle: adverts arrive several times a second.
@@ -931,6 +956,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         if (event->disconnect.reason == BLE_HS_HCI_ERR(0x3e)) s_ble_fails++;
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_hr_val = 0;
+        g_battery = -1;
         g_ble_ready = false;
         if (g_streaming) send_status("error", "H10 link lost");
         // Close the spill segment on link loss so it is flushed to the card;
@@ -1033,14 +1059,42 @@ static void net_task(void *param)
     vTaskDelete(NULL);
 }
 
+static temperature_sensor_handle_t s_tsens;
+
 static void temp_log_cb(void *arg)
 {
-    temperature_sensor_handle_t *ts = (temperature_sensor_handle_t *)arg;
     float c = 0;
-    if (temperature_sensor_get_celsius(*ts, &c) == ESP_OK) {
+    if (s_tsens && temperature_sensor_get_celsius(s_tsens, &c) == ESP_OK) {
         ESP_LOGI(TAG, ">> chip %.1f C, heap %lu KB fritt",
                  c, (unsigned long)(esp_get_free_heap_size() / 1024));
     }
+}
+
+// Telemetri til TILKOBLING-fanen: radioer, temperatur, SD og belteinfo,
+// hvert 5. sekund over agent-WS (kringkastes til UI-et av backend).
+static void telemetry_cb(void *arg)
+{
+    if (!g_ws_up) return;
+    float c = -1;
+    if (s_tsens) temperature_sensor_get_celsius(s_tsens, &c);
+    wifi_ap_record_t ap;
+    int wifi_rssi = 0;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) wifi_rssi = ap.rssi;
+    bool conn = g_conn != BLE_HS_CONN_HANDLE_NONE;
+    int8_t ble_rssi = 0;
+    if (conn) ble_gap_conn_rssi(g_conn, &ble_rssi);
+    char *out = malloc(384);
+    if (!out) return;
+    snprintf(out, 384,
+        "{\"t\":\"telemetry\",\"source\":\"%s\",\"wifi_rssi\":%d,\"chip_c\":%.1f,"
+        "\"heap_kb\":%lu,\"sd\":%s,\"ble_connected\":%s,\"ble_rssi\":%d,"
+        "\"battery\":%d,\"device\":\"%s\",\"streaming\":%s,\"uptime_s\":%llu}",
+        s_source, wifi_rssi, c,
+        (unsigned long)(esp_get_free_heap_size() / 1024),
+        s_sd_ok ? "true" : "false", conn ? "true" : "false", (int)ble_rssi,
+        g_battery, g_device_name, g_streaming ? "true" : "false",
+        (unsigned long long)(esp_timer_get_time() / 1000000));
+    enqueue(out);
 }
 
 void app_main(void)
@@ -1071,17 +1125,24 @@ void app_main(void)
 
     // Termikk-overvaaking ("veldig varm" 20.09): logg chip-temperatur og
     // fritt minne hvert minutt, saa varmeklager kan moetes med tall.
-    static temperature_sensor_handle_t s_tsens;
     temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 80);
-    if (temperature_sensor_install(&tc, &s_tsens) == ESP_OK &&
-        temperature_sensor_enable(s_tsens) == ESP_OK) {
-        const esp_timer_create_args_t temp_args = {
-            .callback = temp_log_cb, .name = "temp_log", .arg = &s_tsens,
-        };
-        esp_timer_handle_t th;
-        ESP_ERROR_CHECK(esp_timer_create(&temp_args, &th));
-        ESP_ERROR_CHECK(esp_timer_start_periodic(th, 60 * 1000000ULL));
+    if (temperature_sensor_install(&tc, &s_tsens) != ESP_OK ||
+        temperature_sensor_enable(s_tsens) != ESP_OK) {
+        s_tsens = NULL;
     }
+    const esp_timer_create_args_t temp_args = {
+        .callback = temp_log_cb, .name = "temp_log",
+    };
+    esp_timer_handle_t th;
+    ESP_ERROR_CHECK(esp_timer_create(&temp_args, &th));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(th, 60 * 1000000ULL));
+
+    const esp_timer_create_args_t tele_args = {
+        .callback = telemetry_cb, .name = "telemetry",
+    };
+    esp_timer_handle_t tt;
+    ESP_ERROR_CHECK(esp_timer_create(&tele_args, &tt));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(tt, 5 * 1000000ULL));
 
     // microSD store-and-forward. GPIO21 is shared between the SD CS and the
     // amber LED, so the LED task only runs when no card is mounted.
