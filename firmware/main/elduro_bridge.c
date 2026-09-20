@@ -46,6 +46,7 @@
 #include <unistd.h>
 #include <dirent.h>
 
+#include "esp_system.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -1125,6 +1126,38 @@ static void temp_log_cb(void *arg)
     }
 }
 
+// Selvhelbredelse: kjøres hvert 5. s. Etter en 531-storm kan NimBLE havne i en
+// tilstand der skann-rutinen bailer og broen aldri kommer videre; da hjelper
+// bare en reboot (trygt nå: backend gjensender START ved re-registrering).
+static int s_wedge_kicks = 0;
+static void supervisor_cb(void *arg)
+{
+    if (!g_want_stream || (g_streaming && g_ecg_total > 0)) {
+        s_wedge_kicks = 0;
+        return;
+    }
+    bool scanning = ble_gap_disc_active();
+    bool connected = g_conn != BLE_HS_CONN_HANDLE_NONE;
+    // Vranglås A: ønsker strøm, men verken skanner eller er tilkoblet.
+    if (!scanning && !connected) {
+        s_wedge_kicks++;
+        ESP_LOGW(TAG, ">> supervisor: idle men ønsket - re-kick skann (%d)", s_wedge_kicks);
+        start_scan();
+        if (s_wedge_kicks >= 3 && !ble_gap_disc_active()) {
+            ESP_LOGE(TAG, ">> supervisor: BLE vranglåst - esp_restart() for selvhelbredelse");
+            esp_restart();
+        }
+        return;
+    }
+    s_wedge_kicks = 0;
+    // Vranglås B: vedvarende belte-avvisning (mange korte 531 på rad) som
+    // aldri strømmer - reboot nullstiller BLE-stacken.
+    if (s_unstable >= 8) {
+        ESP_LOGE(TAG, ">> supervisor: vedvarende belte-avvisning (531) - esp_restart()");
+        esp_restart();
+    }
+}
+
 // Telemetri til TILKOBLING-fanen: radioer, temperatur, SD og belteinfo,
 // hvert 5. sekund over agent-WS (kringkastes til UI-et av backend).
 static void telemetry_cb(void *arg)
@@ -1203,6 +1236,13 @@ void app_main(void)
     esp_timer_handle_t tt;
     ESP_ERROR_CHECK(esp_timer_create(&tele_args, &tt));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tt, 5 * 1000000ULL));
+
+    const esp_timer_create_args_t sup_args = {
+        .callback = supervisor_cb, .name = "supervisor",
+    };
+    esp_timer_handle_t sup;
+    ESP_ERROR_CHECK(esp_timer_create(&sup_args, &sup));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(sup, 5 * 1000000ULL));
 
     // microSD store-and-forward. GPIO21 is shared between the SD CS and the
     // amber LED, so the LED task only runs when no card is mounted.
