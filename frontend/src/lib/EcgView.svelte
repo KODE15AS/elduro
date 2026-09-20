@@ -104,8 +104,10 @@
     const loop = () => {
       const perf = performance.now()
       ecgFresh = perf - scope.lastEcgMs < 1500
-      // the motor runs only while recording and not paused; STOP/PAUSE freeze it
-      scope.tick(perf, wantRec && !paused)
+      // The motor follows `recording` (RECORD pressed here OR live frames from
+      // a session another client started), so an adopted stream renders too.
+      // STOP/PAUSE still freeze it.
+      scope.tick(perf, (wantRec || ecgFresh) && !paused)
       hrBpm = scope.hrBpm
       drawEcg()
       drawAcc()

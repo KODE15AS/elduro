@@ -596,7 +596,9 @@
       liveFresh = perf - lastHrMs < 2500 || perf - scope.lastEcgMs < 2500
       hrFresh = perf - lastHrMs < 3000
       if (mode === 'live') {
-        scope.tick(perf, wantLive && !paused)
+        // Follow live frames too (a session another client started), same
+        // adoption behaviour as EcgView.
+        scope.tick(perf, (wantLive || liveFresh) && !paused)
         if (perf - lastWinMs > 350) {
           liveWins = computeLiveWindows(rrTimes, rrVals, scope.ecgNewestT)
           lastWinMs = perf
