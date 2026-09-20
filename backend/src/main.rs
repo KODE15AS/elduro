@@ -38,6 +38,10 @@ struct AppState {
     ui_tx: broadcast::Sender<String>,
     agents: Mutex<HashMap<String, AgentConn>>,
     ingest: db::Ingest,
+    // Ønskede økter per kilde (source -> mode), satt ved start og fjernet ved
+    // stopp. Lar backend gjensende start når en agent (typisk ESP32-broen)
+    // registrerer seg på nytt etter reboot/strømbrudd - feltgjenopptak.
+    wanted: Mutex<HashMap<String, String>>,
 }
 
 impl AppState {
@@ -74,6 +78,7 @@ async fn main() {
         ui_tx,
         agents: Mutex::new(HashMap::new()),
         ingest: db::Ingest::from_env(),
+        wanted: Mutex::new(HashMap::new()),
     });
 
     // Serve static assets; anything the file server does not find falls back
@@ -170,6 +175,7 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
     // beltet (sett 19.09). Revurderes når dual-H10 kommer (da må arbitrering
     // skje per enhet, ikke globalt).
     if t == "start" {
+        let mut wanted = state.wanted.lock().await;
         for (other_id, other) in agents.iter() {
             for a in &other.adapters {
                 let sid = format!("{other_id}:{}", a.id);
@@ -178,6 +184,8 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
                         "t": "stop", "adapter": a.id, "source": sid
                     });
                     let _ = other.tx.send(stop.to_string());
+                    // Fjern fra ønsket-lista så de ikke gjenopptar og slåss.
+                    wanted.remove(&sid);
                 }
             }
         }
@@ -191,13 +199,13 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
             cmd["mode"] = m.into();
         }
         let _ = conn.tx.send(cmd.to_string());
-        // Arkiv-ingest: øktbokføring følger kommandostrømmen.
+        // Arkiv-ingest + ønsket-økt-bokføring følger kommandostrømmen.
         if t == "start" {
-            state.ingest.send(db::Msg::SessionStart {
-                source: source.to_string(),
-                mode: v["mode"].as_str().unwrap_or("ecg").to_string(),
-            });
+            let mode = v["mode"].as_str().unwrap_or("ecg").to_string();
+            state.wanted.lock().await.insert(source.to_string(), mode.clone());
+            state.ingest.send(db::Msg::SessionStart { source: source.to_string(), mode });
         } else {
+            state.wanted.lock().await.remove(source);
             state.ingest.send(db::Msg::SessionEnd { source: source.to_string() });
         }
     } else {
@@ -208,6 +216,27 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
             })
             .to_string(),
         );
+    }
+}
+
+// Gjensend start for kilder som har en ønsket økt, når agenten (re)registrerer.
+// Dette lar ESP32-broen gjenoppta strømming av seg selv etter reboot/strømbrudd
+// uten at brukeren må trykke START på nytt (feltgjenopptak).
+async fn resume_wanted(state: &Arc<AppState>, agent_id: &str) {
+    // Låserekkefølge: alltid agents før wanted (samme som handle_ui_command),
+    // ellers deadlock.
+    let agents = state.agents.lock().await;
+    let wanted = state.wanted.lock().await;
+    let Some(conn) = agents.get(agent_id) else { return };
+    for a in &conn.adapters {
+        let source = format!("{agent_id}:{}", a.id);
+        if let Some(mode) = wanted.get(&source) {
+            let cmd = serde_json::json!({
+                "t": "start", "adapter": a.id, "source": source, "mode": mode, "duration_s": 0
+            });
+            let _ = conn.tx.send(cmd.to_string());
+            println!("agent '{agent_id}' resume start for {source} (mode={mode})");
+        }
     }
 }
 
@@ -248,6 +277,7 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
         .insert(agent_id.clone(), AgentConn { tx: cmd_tx, adapters, token: my_token });
     state.broadcast_sources().await;
     println!("agent '{agent_id}' registered");
+    resume_wanted(&state, &agent_id).await;
 
     loop {
         tokio::select! {
@@ -271,6 +301,7 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
                                     .entry(agent_id.clone())
                                     .and_modify(|c| c.adapters = adapters);
                                 state.broadcast_sources().await;
+                                resume_wanted(&state, &agent_id).await;
                                 continue;
                             }
                             // Arkiv-ingest: rammer til MariaDB (no-op uten DB),

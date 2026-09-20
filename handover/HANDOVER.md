@@ -148,6 +148,19 @@ Robusthetsfiks 20.09 (strømbrudd-test): brå frakobling (USB-C trukket midt i
    **Fysisk kur (belte-side, kan ikke fikses i firmware): strømsykle beltet –
    sensor av stroppen 30 s – for å tømme spøkelsestilkoblingen. Lad/bytt
    batteri (18 %) før feltbruk.**
+3. Backend-auto-gjenopptak: `wanted`-kart (source→mode) settes ved start,
+   fjernes ved stopp/arbitrering; backend gjensender start når en agent
+   (re)registrerer, så ESP32-broen gjenopptar strømming av seg selv etter
+   reboot/strømbrudd uten at bruker må trykke START. Deployet, men ennå ikke
+   feltverifisert (belte-problemet nedenfor kom i veien for en ren hot-swap).
+
+Åpent belte-problem 20.09 (ikke løst): etter mye testing gikk H10 nr. 1 fra
+3+ min stabil strømming til å terminere hver tilkobling (`reason=531`) ~1 s
+etter «armed», med batteri som svinger 90/18/−1 %. Mistanke: knappcelle
+(CR2025) brownouter under PMD-last, eller fastlåst belte. Neste økt: bytt
+CR2025 og/eller test H10 nr. 2 for å isolere belte vs. bro. Firmwaren
+håndterer det pent nå (backoff + tydelig UI-beskjed), men kan ikke fikse en
+belte som browner ut.
 
 ## Historikk (daterte tillegg, immutable)
 
