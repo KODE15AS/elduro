@@ -106,8 +106,19 @@ og pensjonert. Mulig bidrag: ukene med antenneløs drift (PA-mismatch).
   Gjenstår: v1-migrering av `recordings/` (3,9 GB) og SD-spill-opplasting.
   Kjent v1-forbehold: device_id = source til belteidentitet følger rammene.
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
-- [ ] **Ekte veggklokke på ESP32 (SNTP)** for korpus-justering på tvers av
-  økter og enheter.
+- [x] **Ekte veggklokke på ESP32 (SNTP) – levert 20.09:** `pool.ntp.org` etter
+  IP; `ts_host_ns` bytter fra monoton oppetid til Unix-ns først ved bekreftet
+  synk (aldri 1970 i arkivet); SD-header + telemetri får `clock`-felt; vises i
+  TILKOBLING-fanen. Firmware bygget og committet; **flash venter til ESP32 er
+  tilbake på USB** (var frakoblet ved slutten av økta).
+- [x] **RAW ACC skilt ut i egen fane (20.09):** RAW ECG beholder klinisk
+  strimmelhøyde så to EKG-strimler kan stables når H10 nr. 2 kommer.
+- [ ] **Syntetisk EKG fra to H10 (planlagt):**
+  [docs/architecture/syntetisk-ekg-dual-h10.md](../docs/architecture/syntetisk-ekg-dual-h10.md).
+  Nøkkelpremiss: to belter = to *avledninger*, så fusjon ≠ midling. Rekkefølge:
+  to rå-strimler + synk-verifisering → enkel R-topp-forankret kombinasjon i
+  RHYTHM/HRV → kvalitetsvektet fusjon → (offline) full rekonstruksjon.
+  RR/RMSSD-fremtid avventer at syntetisk EKG er godt nok.
 - [x] **TILKOBLING-fane (20.09.2026):** all øktstyring flyttet fra
   visningsfanene til én tilkoblingsfane (`/tilkobling`): kildekort per kilde
   (N-kilder-design, klart for dual-H10), modusvalg + start/stopp,
@@ -116,7 +127,9 @@ og pensjonert. Mulig bidrag: ukene med antenneløs drift (PA-mismatch).
   (WiFi-RSSI, chip-temp, heap, SD-status, oppetid). RAW ECG og RHYTHM/HRV er
   rene visninger med kildefilter og pause. Verifisert i produksjon uten
   belte; full E2E-sjekk med belte gjenstår (batteri/BLE-RSSI/rate-dots).
-- [ ] **Felt-/mobil-UI:** styrelayout, wake lock, aggressiv reconnect.
+- [~] **Felt-/mobil-UI:** det meste dekket av TILKOBLING-fanen + auto-
+  gjenopptak (Jørns vurdering 20.09); gjenstår ev. wake lock og mobiloptimal
+  styrelayout ved behov.
 - [ ] **Hendelsesmarkør:** ACC-tapp som MVP; eventuelt ESP32-knapp.
 - [ ] **Batteri/kapsling/effektbudsjett** for 31+ min økt (1S 1000 mAh LiPo).
 - [x] ~~HR Compare med ESP32 som kilde~~ – **HR Compare-fanen ble fjernet
@@ -182,11 +195,10 @@ innkjøpsanbefaling i doc (til beslutning, norm «bestilling» – ikke bestilt)
 
 Vurdering 20.09 – **alternative CPU-er til ESP32-S3:**
 [docs/hardware/mcu-alternativer-vurdering.md](../docs/hardware/mcu-alternativer-vurdering.md).
-Behold ESP32-S3 nå (stabilisert). Lavrisiko-eksperiment med høy verdi: kjør den
-eksisterende Rust-agenten på en Pi Zero 2 W (null firmware, fjerner coex-
-klassen, mot strøm/størrelse-kostnad). Beste felt-RF på sikt: nRF5340+nRF7002
-(dedikert BLE-radio + 3-tråds coex), men Zephyr + tilpasset kort = høy innsats.
-XIAO ESP32-C6 og Pico 2 W er sidegrades (fortsatt én delt radio).
+*Beslutning (Jørn 20.09): behold ESP32-S3; **Pi Zero 2 W noteres for eventuell
+fremtidig vurdering – ikke aktuelt nå.*** Beste felt-RF på sikt hvis coex igjen
+blir blokker: nRF5340+nRF7002 (dedikert BLE-radio + 3-tråds coex), men Zephyr +
+tilpasset kort = høy innsats. XIAO ESP32-C6 og Pico 2 W er sidegrades.
 
 ## Historikk (daterte tillegg, immutable)
 
