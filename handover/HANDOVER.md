@@ -108,6 +108,14 @@ og pensjonert. Mulig bidrag: ukene med antenneløs drift (PA-mismatch).
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
 - [ ] **Ekte veggklokke på ESP32 (SNTP)** for korpus-justering på tvers av
   økter og enheter.
+- [x] **TILKOBLING-fane (20.09.2026):** all øktstyring flyttet fra
+  visningsfanene til én tilkoblingsfane (`/tilkobling`): kildekort per kilde
+  (N-kilder-design, klart for dual-H10), modusvalg + start/stopp,
+  strømbekreftelse med målte rater mot nominelt (EKG/ACC/HR), Polar-info
+  (navn, batteri, BLE-RSSI) og bro-telemetri fra firmware hvert 5. s
+  (WiFi-RSSI, chip-temp, heap, SD-status, oppetid). RAW ECG og RHYTHM/HRV er
+  rene visninger med kildefilter og pause. Verifisert i produksjon uten
+  belte; full E2E-sjekk med belte gjenstår (batteri/BLE-RSSI/rate-dots).
 - [ ] **Felt-/mobil-UI:** styrelayout, wake lock, aggressiv reconnect.
 - [ ] **Hendelsesmarkør:** ACC-tapp som MVP; eventuelt ESP32-knapp.
 - [ ] **Batteri/kapsling/effektbudsjett** for 31+ min økt (1S 1000 mAh LiPo).
