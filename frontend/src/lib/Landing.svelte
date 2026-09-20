@@ -1,13 +1,8 @@
 <script lang="ts">
-  type View = 'home' | 'hr' | 'ecg' | 'hrv'
+  type View = 'home' | 'ecg' | 'hrv'
   let { onopen }: { onopen: (v: View) => void } = $props()
 
   const tools: { view: View; title: string; desc: string }[] = [
-    {
-      view: 'hr',
-      title: 'HR COMPARE',
-      desc: 'Side-by-side heart-rate and RR capture across sources.',
-    },
     {
       view: 'ecg',
       title: 'RAW ECG',

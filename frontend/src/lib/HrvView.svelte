@@ -52,6 +52,15 @@
   // liveFresh, but that must not hide GO LIVE (which starts an HRV session).
   const running = $derived(wantLive)
 
+  // Auto-select a sensible source (same pattern as EcgView): without this the
+  // selection resets to '' on every tab switch and GO LIVE stays disabled.
+  function preferredSource(ids: string[]): string {
+    return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''
+  }
+  $effect(() => {
+    if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
+  })
+
   let stripCanvas: HTMLCanvasElement
   let tachoCanvas: HTMLCanvasElement
   let rmssdCanvas: HTMLCanvasElement
