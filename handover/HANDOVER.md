@@ -167,10 +167,18 @@ avlesningene var symptom på vranglåsen.
 → backend gjensendte START automatisk (`resume start ...` i loggen) → strøm
 gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
 
-Åpent (forbedring, ikke blokker): ESP32-firmwaren kan låse BLE-tilstanden etter
-en langvarig 531-storm så den trenger reboot. Verdig selvhelbredelse: reboot
-BLE-stacken (eller `esp_restart()`) hvis START ikke fører til skanning/tilkobling
-innen ~15 s. Systemet helbreder seg i dag via reboot + auto-gjenopptak.
+- [x] **Firmware-selvhelbredelse (20.09):** supervisor hvert 5. s rebooter via
+  `esp_restart()` når broen er vranglåst (ingen skann/connect tross ønsket
+  strøm etter 3 kick, eller vedvarende 531-avvisning) – trygt fordi backend
+  gjensender START. Erstatter behovet for manuell ESP-reboot etter 531-storm.
+
+Vurdering 20.09 – **USB-lagring / SSD-powerbank-idé:**
+[docs/hardware/usb-lagring-vurdering.md](../docs/hardware/usb-lagring-vurdering.md).
+Konklusjon: 2-i-1 SSD-powerbank passer ikke (VBUS-rollekonflikt, USB 3.2 vs.
+ESP32 full-speed, >32 GB). ESP32-S3 kan være USB-MSC-vert for en enkel
+bus-drevet minnepinne (krever ekstern 5 V på VBus + tapt native-USB), men
+microSD på Sense-kortet (bestilt) er den rene veien. Konkret startpunkt +
+innkjøpsanbefaling i doc (til beslutning, norm «bestilling» – ikke bestilt).
 
 ## Historikk (daterte tillegg, immutable)
 
