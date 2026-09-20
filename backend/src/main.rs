@@ -161,6 +161,23 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
         return;
     };
     let agents = state.agents.lock().await;
+    // Nyeste start vinner: H10 godtar én BLE-sentral om gangen, så en start
+    // stopper først alle andre kilder. Hindrer at to faner/radioer sloss om
+    // beltet (sett 19.09). Revurderes når dual-H10 kommer (da må arbitrering
+    // skje per enhet, ikke globalt).
+    if t == "start" {
+        for (other_id, other) in agents.iter() {
+            for a in &other.adapters {
+                let sid = format!("{other_id}:{}", a.id);
+                if sid != source {
+                    let stop = serde_json::json!({
+                        "t": "stop", "adapter": a.id, "source": sid
+                    });
+                    let _ = other.tx.send(stop.to_string());
+                }
+            }
+        }
+    }
     if let Some(conn) = agents.get(agent_id) {
         let mut cmd = serde_json::json!({ "t": t, "adapter": adapter, "source": source });
         if let Some(d) = v["duration_s"].as_u64() {
