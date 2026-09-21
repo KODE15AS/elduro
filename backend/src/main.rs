@@ -42,9 +42,42 @@ struct AppState {
     // stopp. Lar backend gjensende start når en agent (typisk ESP32-broen)
     // registrerer seg på nytt etter reboot/strømbrudd - feltgjenopptak.
     wanted: Mutex<HashMap<String, String>>,
+    // Beltelåsing for dual-H10 (beslutning 21.09.2026): kildemønster -> belte-id
+    // fra ELDURO_DEVICE_PINS, f.eks. "esp32-*=0B052A39,raven:hci1=1DA2053E".
+    // Mønster med avsluttende '*' er prefiks-match (ESP32-id-en bærer MAC).
+    // Kilder låst til ULIKE belter arbitreres per enhet; alt annet beholder
+    // global «nyeste start vinner» (19.09-beskyttelsen mot belte-slåssing).
+    pins: Vec<(String, String)>,
+}
+
+fn parse_pins() -> Vec<(String, String)> {
+    std::env::var("ELDURO_DEVICE_PINS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .filter_map(|e| {
+                    let (k, v) = e.split_once('=')?;
+                    let (k, v) = (k.trim(), v.trim());
+                    (!k.is_empty() && !v.is_empty())
+                        .then(|| (k.to_string(), v.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl AppState {
+    /// Belte-id kilden er låst til (fra ELDURO_DEVICE_PINS), om noen.
+    fn pin_for(&self, source: &str) -> Option<&str> {
+        self.pins
+            .iter()
+            .find(|(pat, _)| match pat.strip_suffix('*') {
+                Some(prefix) => source.starts_with(prefix),
+                None => pat == source,
+            })
+            .map(|(_, belt)| belt.as_str())
+    }
+
     async fn sources_json(&self) -> String {
         let agents = self.agents.lock().await;
         let mut sources = Vec::new();
@@ -79,7 +112,11 @@ async fn main() {
         agents: Mutex::new(HashMap::new()),
         ingest: db::Ingest::from_env(),
         wanted: Mutex::new(HashMap::new()),
+        pins: parse_pins(),
     });
+    if !state.pins.is_empty() {
+        println!("device pins: {:?}", state.pins);
+    }
 
     // Serve static assets; anything the file server does not find falls back
     // to index.html with a real 200 so client-side deep links (e.g. /raw-ecg)
@@ -170,23 +207,33 @@ async fn handle_ui_command(state: &AppState, raw: &str) {
         return;
     };
     let agents = state.agents.lock().await;
-    // Nyeste start vinner: H10 godtar én BLE-sentral om gangen, så en start
-    // stopper først alle andre kilder. Hindrer at to faner/radioer sloss om
-    // beltet (sett 19.09). Revurderes når dual-H10 kommer (da må arbitrering
-    // skje per enhet, ikke globalt).
+    // Arbitrering (per enhet fra 21.09.2026, dual-H10): kilder som er låst til
+    // ULIKE belter via ELDURO_DEVICE_PINS får strømme samtidig. For alle andre
+    // kombinasjoner (samme belte, eller ukjent låsing) gjelder fortsatt global
+    // «nyeste start vinner»: H10 godtar én BLE-sentral om gangen, så en start
+    // stopper først konkurrerende kilder. Hindrer at to faner/radioer sloss om
+    // beltet (sett 19.09).
     if t == "start" {
+        let pin_x = state.pin_for(source);
         let mut wanted = state.wanted.lock().await;
         for (other_id, other) in agents.iter() {
             for a in &other.adapters {
                 let sid = format!("{other_id}:{}", a.id);
-                if sid != source {
-                    let stop = serde_json::json!({
-                        "t": "stop", "adapter": a.id, "source": sid
-                    });
-                    let _ = other.tx.send(stop.to_string());
-                    // Fjern fra ønsket-lista så de ikke gjenopptar og slåss.
-                    wanted.remove(&sid);
+                if sid == source {
+                    continue;
                 }
+                // Begge låst, til hvert sitt belte -> ingen konflikt, la stå.
+                if let (Some(px), Some(ps)) = (pin_x, state.pin_for(&sid)) {
+                    if px != ps {
+                        continue;
+                    }
+                }
+                let stop = serde_json::json!({
+                    "t": "stop", "adapter": a.id, "source": sid
+                });
+                let _ = other.tx.send(stop.to_string());
+                // Fjern fra ønsket-lista så de ikke gjenopptar og slåss.
+                wanted.remove(&sid);
             }
         }
     }

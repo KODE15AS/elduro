@@ -42,20 +42,28 @@ fn default_agent_name() -> String {
 async fn main() {
     let mut backend_url = DEFAULT_BACKEND.to_string();
     let mut agent_name = default_agent_name();
+    // Beltelåsing (dual-H10, 21.09.2026): --device begrenser skannet til
+    // annonseringsnavn som inneholder strengen, f.eks. "1DA2053E" for belte B.
+    // Uten flagget tas første og beste Polar H10 (som før).
+    let mut device_filter: Option<String> = None;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
     while i + 1 < args.len() {
         match args[i].as_str() {
             "--backend" => backend_url = args[i + 1].clone(),
             "--agent" => agent_name = args[i + 1].clone(),
+            "--device" => device_filter = Some(args[i + 1].clone()),
             _ => {}
         }
         i += 2;
     }
 
     println!("elduro capture agent '{agent_name}' -> {backend_url}");
+    if let Some(d) = &device_filter {
+        println!("device filter: only belts matching '{d}'");
+    }
     loop {
-        match run(&backend_url, &agent_name).await {
+        match run(&backend_url, &agent_name, device_filter.as_deref()).await {
             Ok(()) => println!("backend connection closed, reconnecting in 3s"),
             Err(e) => println!("connection error: {e}, retrying in 3s"),
         }
@@ -91,7 +99,7 @@ fn register_msg(agent: &str, adapters: &[(String, String, Adapter)]) -> String {
     serde_json::json!({ "t": "register", "agent": agent, "adapters": list }).to_string()
 }
 
-async fn run(url: &str, agent: &str) -> Result<(), Box<dyn Error>> {
+async fn run(url: &str, agent: &str, device_filter: Option<&str>) -> Result<(), Box<dyn Error>> {
     let (ws, _) = tokio_tungstenite::connect_async(url).await?;
     let (mut tx, mut rx) = ws.split();
 
@@ -158,8 +166,9 @@ async fn run(url: &str, agent: &str) -> Result<(), Box<dyn Error>> {
                         let out = out_tx.clone();
                         let stop = stop_rx.clone();
                         let my_gen = generation;
+                        let filter = device_filter.map(str::to_string);
                         tokio::spawn(async move {
-                            run_session(adapter, source, mode, duration_s, out, stop, my_gen).await;
+                            run_session(adapter, source, mode, duration_s, filter, out, stop, my_gen).await;
                         });
                     }
                     Some("stop") => {
@@ -203,6 +212,7 @@ async fn run_session(
     source: String,
     mode: String,
     duration_s: u64,
+    device_filter: Option<String>,
     out: mpsc::UnboundedSender<String>,
     mut stop: watch::Receiver<u64>,
     my_gen: u64,
@@ -211,7 +221,11 @@ async fn run_session(
         let _ = out.send(msg);
     };
 
-    send(status(&source, "scanning", "looking for Polar H10", None, None));
+    let looking = match &device_filter {
+        Some(d) => format!("looking for Polar H10 {d}"),
+        None => "looking for Polar H10".to_string(),
+    };
+    send(status(&source, "scanning", &looking, None, None));
     let t_sess = Instant::now();
     println!("[{source}] session start (mode={mode})");
     // Handoff: a just-cancelled session may still hold the strap connected, and
@@ -277,6 +291,13 @@ async fn run_session(
             match &found {
                 None => {
                     let name = props.local_name.clone().unwrap_or_default();
+                    // Beltelåsing: med --device tas kun annonseringsnavn som
+                    // matcher filteret (hindrer at vi stjeler feil belte).
+                    if let Some(f) = &device_filter {
+                        if !name.contains(f.as_str()) {
+                            continue;
+                        }
+                    }
                     if props.services.contains(&HRS_UUID) || name.contains("Polar") {
                         best_rssi = props.rssi;
                         found = Some(p);

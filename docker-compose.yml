@@ -21,6 +21,9 @@ services:
       # også joines til dens docker-nett (gjøres ved provisjonering).
       ELDURO_DB_URL: ${ELDURO_DB_URL:-}
       ELDURO_SUBJECT_ID: ${ELDURO_SUBJECT_ID:-subject-1}
+      # Beltelåsing for dual-H10 (per-enhet-arbitrering, 21.09.2026):
+      # "kildemønster=belte-id", kommaseparert; '*' på slutten = prefiks-match.
+      ELDURO_DEVICE_PINS: ${ELDURO_DEVICE_PINS:-}
     networks:
       - default
       # Delt MariaDB-stack (kanonisk arkiv) - se unntak nr. 2 i AGENTS.md.
