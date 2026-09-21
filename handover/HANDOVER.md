@@ -34,16 +34,24 @@ for status/backlog. Punktene krysses av etter hvert som de leveres.
 Rekkefølge justert 21.09.2026 (chat 5): SD-opplasting venter på maskinvare, så
 UI-finpuss og dual-H10-benkarbeid går først.
 
-- [ ] **UI-finpuss elduro.no** (Jørns beskrivelsesdokument kommer; inkluderer
-  EKG y-skala og raskere hudkontakt-visning fra listen under).
-- [ ] **Dual-H10 benkstart** (beslutninger 21.09 i
-  [docs/architecture/syntetisk-ekg-dual-h10.md](../docs/architecture/syntetisk-ekg-dual-h10.md)):
-  ~~arbitrering per enhet → kun A på ESP32 → kun B på BT-600 → begge samtidig~~
-  **LEVERT 21.09 kveld: begge belter strømmer samtidig til arkivet** (A på
-  ESP32, B på BT-600 med `--device`-lås; `ELDURO_DEVICE_PINS` i `.env`).
-  Gjenstår: to rå-strimler + R-topp-synk → syntetisk 2-avlednings-EKG + plan
-  vektorsløyfe i **ny fane** → konsensus-basert HRV/RMSSD. Kalibrering mot
-  12-avlednings-EKG (referansebilde ligger i `docs/private/`, gitignorert).
+- [x] **UI-finpuss elduro.no (LEVERT 21.09 natt, Jørns finpuss-dokument):**
+  RAW ECG/ACC uten kildevelger - viser automatisk aktive strømmer, to stablede
+  strimler/paneler ved dual (A øverst, fast). ACC komprimert til
+  EKG-strimmelhøyde. RHYTHM/HRV omdøpt til **SYNTETISK EKG** (path
+  `/syntetisk-ekg`, gammel path er alias); all tilkoblingsinfo kun på
+  TILKOBLING. Gjenstår fra gammel liste: EKG y-skala-finjustering.
+- [x] **Dual-H10 benkstart + syntetisk EKG v1 (LEVERT 21.09):** begge belter
+  strømmer samtidig til arkivet (A på ESP32, B på BT-600 med `--device`-lås;
+  `ELDURO_DEVICE_PINS` i `.env`). **Syntesemotor i backend**
+  (`backend/src/synth.rs`): R-topp-forankret klokke-fit (offset+drift) +
+  polaritetsjustert fusjon, kringkastes som kilde `synth` (genereres kun,
+  arkiveres ikke). Replay-validert mot kveldens dual-data
+  (`--bin synth_replay`): 100 % R-topp-match, ~3,2 ms residual,
+  lead-korrelasjon +0,85-0,94. Visning med grunnlag/konfidens og «washed
+  out» høyrekant.
+- [ ] **Dual-H10 neste trinn:** konsensus-basert HRV/RMSSD (slag begge belter
+  ser, ACC/SQI-vekting), plan vektorsløyfe (2D-VCG), metode 2/3-fusjon,
+  validering mot 12-avlednings-referansen (`docs/private/`, gitignorert).
   Lærdommer fra benkstarten: (1) drept sentral gir foreldreløs PMD-strøm i
   beltet → agenten fikk stopp-før-start; (2) belte-reset (knappcelle) sletter
   beltets bindingsnøkler → slett BlueZ-bindingen og par på nytt manuelt
@@ -60,10 +68,11 @@ UI-finpuss og dual-H10-benkarbeid går først.
 - [ ] **v1-migrering** av `recordings/*.jsonl` (3,9 GB) inn i MariaDB.
 - [ ] **Robusthets-finpuss:** full avtak → BLE faller → auto-rekobling kan
   henge ~1 min (STOPP+START gjenoppretter på ~2 s); tydeligere pause-visning.
-- [ ] **Raskere hudkontakt-visning** (umiddelbar telemetri ved kontaktendring;
-  inngår i UI-finpussen).
+- [ ] **Raskere hudkontakt-visning:** benkeagenten LEVERT 21.09 (telemetri
+  umiddelbart ved kontaktendring); ESP32-firmware gjenstår (5 s-kadens).
+  Auto-pause ved avtak mangler også i benkeagenten (paritet med firmware).
 - [ ] **EKG-strimmelens y-skala** finjusteres (ser mindre ut etter
-  høydeendring; inngår i UI-finpussen).
+  høydeendring).
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
 - [ ] **Dual-H10 felt** (to belter på én ESP32-bro): venter på nytt Sense-kort;
   benkarbeidet over går først.

@@ -127,5 +127,11 @@ Etter faktainnhenting (repo + litteratur) og gjennomgang punkt for punkt:
 9. **Arbitrering per enhet er porten:** global «nyeste start vinner» i
    backend erstattes av per-enhet-arbitrering som beholder beskyttelsen
    per belte; regresjonstest med ett belte før to kilder slippes på.
-10. **Ny egen fane** i elduro.no for syntetisk EKG / vektorsløyfe;
-    RHYTHM/HRV består som i dag inntil konsensus-HRV er validert.
+10. **Ny egen fane** i elduro.no for syntetisk EKG / vektorsløyfe.
+    *Revidert samme kveld (Jørns finpuss-dokument):* RHYTHM/HRV-fanen **er**
+    den nye fanen - omdøpt til SYNTETISK EKG, tachogram/RMSSD består i den.
+11. **Metode 1 levert 21.09 natt** (`backend/src/synth.rs` + replay-
+    validering mot ekte dual-data: 100 % R-topp-match, ~3,2 ms residual,
+    korrelasjon +0,85-0,94, drift ~-10 ppm). Fusjonen er 50/50-snitt med
+    polaritetsvakt (EMA-korrelasjon); kvalitetsvekting (metode 3) og
+    vektorsløyfe gjenstår.
