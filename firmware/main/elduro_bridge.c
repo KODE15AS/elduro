@@ -136,6 +136,7 @@ static int s_ble_fails = 0;                 // consecutive failed connect rounds
 static esp_timer_handle_t s_rescan_timer;   // backoff before the next scan
 static esp_timer_handle_t s_start_retry_timer;  // retry PMD start writes
 static esp_timer_handle_t s_pmd_watchdog;   // river ned linken hvis PMD uteblir
+static esp_timer_handle_t s_release_timer;  // utsatt slipp: la PMD-stopp naa beltet foerst
 static int64_t s_stream_started_us = 0;     // naar mark_streaming ble kalt
 static int64_t s_connected_us = 0;          // naar siste CONNECT-event kom
 static int s_unstable = 0;                   // korte tilkoblinger paa rad (belte-avvisning)
@@ -510,6 +511,28 @@ static int on_ecg_started(uint16_t ch, const struct ble_gatt_error *err,
     return 0;
 }
 
+// Opprydding foer start (Polar KnownIssues, H10 Issue 2): ECG/ACC-stroemmer
+// som aldri ble stoppet (stroembrudd, reboot) fortsetter aa kjoere i beltet
+// til batteriet doer. Send derfor alltid STOPP for begge foer START - rydder
+// foreldreloese stroemmer fra en tidligere brå frakobling.
+static int on_cleanup_acc(uint16_t ch, const struct ble_gatt_error *err,
+                          struct ble_gatt_attr *attr, void *arg)
+{
+    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_START_CMD,
+                                  sizeof(ECG_START_CMD), on_ecg_started, NULL);
+    if (rc != 0) retry_start_later("ECG start (write)", rc);
+    return 0;
+}
+
+static int on_cleanup_ecg(uint16_t ch, const struct ble_gatt_error *err,
+                          struct ble_gatt_attr *attr, void *arg)
+{
+    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_STOP_CMD,
+                                  sizeof(ACC_STOP_CMD), on_cleanup_acc, NULL);
+    if (rc != 0) retry_start_later("ACC cleanup (write)", rc);
+    return 0;
+}
+
 static void start_measurements(void)
 {
     if (g_streaming || !g_ble_ready) {
@@ -526,9 +549,10 @@ static void start_measurements(void)
         mark_streaming();
         return;
     }
-    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_START_CMD,
-                                  sizeof(ECG_START_CMD), on_ecg_started, NULL);
-    if (rc != 0) retry_start_later("ECG start (write)", rc);
+    // Kjede: ECG-STOPP -> ACC-STOPP (opprydding) -> ECG-START -> ACC-START.
+    int rc = ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_STOP_CMD,
+                                  sizeof(ECG_STOP_CMD), on_cleanup_ecg, NULL);
+    if (rc != 0) retry_start_later("ECG cleanup (write)", rc);
 }
 
 static void start_retry_cb(void *arg)
@@ -604,7 +628,11 @@ static void handle_command(const char *data, int len)
         ESP_LOGI(TAG, "cmd: stop");
         g_want_stream = false;
         stop_measurements();
-        ble_release();
+        // Utsatt slipp (Polar KnownIssues, H10 Issue 2): PMD-stoppene maa naa
+        // beltet FOER terminate, ellers fortsetter beltet aa maale til
+        // batteriet er tomt. 400 ms er rikelig for to smaa GATT-skriv.
+        esp_timer_stop(s_release_timer);
+        esp_timer_start_once(s_release_timer, 400000);
     }
 }
 
@@ -844,6 +872,7 @@ static void start_scan(void)
 // Back off between failed connect rounds: 0.3 s the first time, +0.7 s per
 // consecutive failure, capped at ~3.8 s.
 static void rescan_cb(void *arg) { start_scan(); }
+static void release_cb(void *arg) { if (!g_want_stream) ble_release(); }
 
 static void schedule_scan(void)
 {
@@ -1249,6 +1278,11 @@ void app_main(void)
         .callback = pmd_watchdog_cb, .name = "pmd_watchdog",
     };
     ESP_ERROR_CHECK(esp_timer_create(&pmd_wd_args, &s_pmd_watchdog));
+
+    const esp_timer_create_args_t release_args = {
+        .callback = release_cb, .name = "ble_release",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&release_args, &s_release_timer));
 
     // Termikk-overvaaking ("veldig varm" 20.09): logg chip-temperatur og
     // fritt minne hvert minutt, saa varmeklager kan moetes med tall.
