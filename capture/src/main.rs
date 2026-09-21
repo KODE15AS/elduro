@@ -536,6 +536,13 @@ async fn stream_pmd(
     }
     p.subscribe(&control).await.ok();
     println!("[{source}] pmd: data+control subscribed at {:?}", t_pmd.elapsed());
+    // Stopp-før-start (paritet med ESP32-firmwarens chat-4-fix): en foreldreløs
+    // strøm etter en drept sentral kjører ellers i beltet til batteriet tas ut
+    // (Polar Issue 2) og kan velte ny EKG-start. Feilsvar ignoreres bevisst -
+    // «ingen strøm å stoppe» er normaltilfellet.
+    p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ECG), WriteType::WithResponse).await.ok();
+    p.write(&control, &pmd::stop_cmd(pmd::MTYPE_ACC), WriteType::WithResponse).await.ok();
+    tokio::time::sleep(Duration::from_millis(300)).await;
     if let Err(e) = p
         .write(&control, &pmd::start_ecg_cmd(), WriteType::WithResponse)
         .await
