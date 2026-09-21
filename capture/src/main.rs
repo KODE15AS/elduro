@@ -442,6 +442,11 @@ async fn run_session(
     let effective_s = if duration_s == 0 { 24 * 3600 } else { duration_s };
     let deadline = started + Duration::from_secs(effective_s);
     let reason;
+    // Hudkontakt-telemetri (21.09.2026): benkeagenten var blind for
+    // hudkontakt-biten - beltet fortsatte å "strømme" støy etter avtak uten
+    // at UI-et viste hvorfor.
+    let mut last_contact: Option<bool> = None;
+    let mut last_tele = Instant::now() - Duration::from_secs(10);
 
     loop {
         tokio::select! {
@@ -461,7 +466,7 @@ async fn run_session(
             n = notifications.next() => {
                 match n {
                     Some(data) if data.uuid == HRM_UUID => {
-                        let (bpm, rr) = parse_hr(&data.value);
+                        let (bpm, rr, contact) = parse_hr(&data.value);
                         let msg = serde_json::json!({
                             "t": "hr",
                             "source": source,
@@ -470,6 +475,16 @@ async fn run_session(
                             "rr": rr,
                         });
                         send(msg.to_string());
+                        // Telemetri: hvert 5. s, eller umiddelbart ved
+                        // kontaktendring (rask hudkontakt-visning).
+                        let now = Instant::now();
+                        if contact != last_contact
+                            || now.duration_since(last_tele) > Duration::from_secs(5)
+                        {
+                            last_contact = contact;
+                            last_tele = now;
+                            send(telemetry_json(&source, &device_name, battery, contact));
+                        }
                     }
                     Some(_) => {}
                     None => {
@@ -583,6 +598,9 @@ async fn stream_pmd(
     let mut prev_ecg_ts: Option<u64> = None;
     let mut gaps: u64 = 0;
     let mut first_frame_logged = false;
+    // Hudkontakt-telemetri (21.09.2026), se run_session for begrunnelse.
+    let mut last_contact: Option<bool> = None;
+    let mut last_tele = Instant::now() - Duration::from_secs(10);
     let reason;
 
     loop {
@@ -604,9 +622,10 @@ async fn stream_pmd(
                 let Some(data) = n else { reason = "disconnected"; break; };
                 if data.uuid == HRM_UUID {
                     // HR is always subscribed to wake the sensor; only surface it
-                    // when the caller actually asked for it (hrv mode).
+                    // when the caller actually asked for it (hrv mode). Hudkontakt
+                    // leses ALLTID (0x2A37-flagg) og sendes som telemetri.
+                    let (bpm, rr, contact) = parse_hr(&data.value);
                     if with_hr {
-                        let (bpm, rr) = parse_hr(&data.value);
                         let host_unix_ns = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map(|d| d.as_nanos() as u64)
@@ -617,6 +636,14 @@ async fn stream_pmd(
                             "bpm": bpm, "rr": rr,
                         }).to_string());
                         recorder.write_hr(host_unix_ns, bpm, &rr);
+                    }
+                    let now = Instant::now();
+                    if contact != last_contact
+                        || now.duration_since(last_tele) > Duration::from_secs(5)
+                    {
+                        last_contact = contact;
+                        last_tele = now;
+                        send(telemetry_json(source, device_name, battery, contact));
                     }
                     continue;
                 }
@@ -776,23 +803,29 @@ impl PmdRecorder {
 }
 
 /// Parse a standard Heart Rate Measurement (0x2A37) payload.
-/// Returns (bpm, rr_intervals_ms).
-fn parse_hr(data: &[u8]) -> (u16, Vec<u32>) {
+/// Returns (bpm, rr_intervals_ms, hudkontakt). Kontakt: flaggbit 2 (0x04) =
+/// «sensor contact supported», bit 1 (0x02) = kontakt nå. None = ikke støttet.
+fn parse_hr(data: &[u8]) -> (u16, Vec<u32>, Option<bool>) {
     if data.is_empty() {
-        return (0, vec![]);
+        return (0, vec![], None);
     }
     let flags = data[0];
+    let contact = if flags & 0x04 != 0 {
+        Some(flags & 0x02 != 0)
+    } else {
+        None
+    };
     let mut i = 1usize;
     let bpm: u16 = if flags & 0x01 != 0 {
         if data.len() < 3 {
-            return (0, vec![]);
+            return (0, vec![], contact);
         }
         let v = u16::from_le_bytes([data[1], data[2]]);
         i = 3;
         v
     } else {
         if data.len() < 2 {
-            return (0, vec![]);
+            return (0, vec![], contact);
         }
         i = 2;
         data[1] as u16
@@ -810,6 +843,27 @@ fn parse_hr(data: &[u8]) -> (u16, Vec<u32>) {
             i += 2;
         }
     }
-    (bpm, rr)
+    (bpm, rr, contact)
+}
+
+/// Telemetri til TILKOBLING-fanen (samme feltnavn som ESP32-broen bruker,
+/// men bare feltene benkeagenten faktisk kjenner).
+fn telemetry_json(
+    source: &str,
+    device: &str,
+    battery: Option<u8>,
+    contact: Option<bool>,
+) -> String {
+    let mut v = serde_json::json!({
+        "t": "telemetry",
+        "source": source,
+        "device": device,
+        "ble_connected": true,
+        "contact": match contact { Some(true) => "yes", Some(false) => "no", None => "-" },
+    });
+    if let Some(b) = battery {
+        v["battery"] = b.into();
+    }
+    v.to_string()
 }
 
