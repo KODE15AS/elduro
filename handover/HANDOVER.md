@@ -185,15 +185,24 @@ gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
   strøm etter 3 kick, eller vedvarende 531-avvisning) – trygt fordi backend
   gjensender START. Erstatter behovet for manuell ESP-reboot etter 531-storm.
 
-**ÅPENT belte-problem (20.09 kveld) – H10 nr. 1 mistenkt defekt:** dropper
-EKG+ACC ~20–30 s inn i strømmen (`reason=531`), mens HR alene fortsetter.
-Batteribytte hjalp IKKE – fersk celle leste fortsatt 18 % under last (skulle
-vært ~100 %), og beltet droppet likevel → avkrefter batteri som eneste årsak,
-peker mot belte-elektronikkfeil. RSSI sterkt (−43…−54), så ikke rekkevidde;
-ESP32 + firmware oppfører seg korrekt (selvhelbredelse + backoff + tydelig
-UI-melding). **Plan i morgen: test H10 nr. 2 (nytt belte).** Nr. 2 stabil →
-nr. 1 defekt; nr. 2 dropper også → felles-oppsett-feil. Det nye UI-et (RAW ACC-
-fane m.m.) er OK – «nytt oppsett» refererte kun til UI, ingen maskinvareendring.
+**Belte-problem 20.09 kveld – OMTOLKET 21.09 etter Polar KnownIssues-funn:**
+H10 droppet EKG+ACC ~20–30 s inn (`reason=531`) og leste 18 % selv med fersk
+celle. Polar-dokumentert forklaring funnet i
+[polar-ble-sdk KnownIssues](https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/KnownIssues.md):
+- **H10 Issue 2 (alle firmware):** ECG/ACC-strømmer som ikke termineres av
+  sentralen fortsetter å kjøre i beltet **til batteriet tas ut eller er tomt**
+  – gjelder også ved stroppavtak. Gårsdagens teststorm (strømkutt, reboots)
+  etterlot altså beltet målende ut i lufta gang på gang → drenering + vranglås.
+- **H10 Issue 1:** BLE-frakobling skjer først **45 s** etter stroppavtak – vår
+  «30 s av stroppen»-kur var for kort; ekte reset = batteriuttak.
+**Konsekvens:** belte nr. 1 er ikke nødvendigvis defekt – det kan ha vært
+drenert/vranglåst av testingen. Firmware-motmidler levert 21.09 (`651a11d`):
+PMD **stopp-før-start** (rydder foreldreløse strømmer ved hver start) og
+**utsatt slipp** (PMD-stopp når beltet før terminate). Dagens test: belte med
+fersk celle (ekte reset via batteriuttak) + ny firmware; nr. 2/nr. 3 som
+referanse (Jørn har tre H10-er og sjekker firmware på alle).
+Merk: ESP32-firmwaren vår bruker IKKE Polar-SDK-en (den er Android/iOS); vår
+PMD-implementasjon er egen, men SDK-repoets dokumentasjon er protokollfasit.
 
 Vurdering 20.09 – **USB-lagring / SSD-powerbank-idé:**
 [docs/hardware/usb-lagring-vurdering.md](../docs/hardware/usb-lagring-vurdering.md).
