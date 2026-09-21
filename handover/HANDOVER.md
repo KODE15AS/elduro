@@ -31,17 +31,29 @@ for status/backlog. Punktene krysses av etter hvert som de leveres.
 
 ## Gjenstående (prioritert backlog – detaljer i 4→5-dokumentet)
 
+Rekkefølge justert 21.09.2026 (chat 5): SD-opplasting venter på maskinvare, så
+UI-finpuss og dual-H10-benkarbeid går først.
+
+- [ ] **UI-finpuss elduro.no** (Jørns beskrivelsesdokument kommer; inkluderer
+  EKG y-skala og raskere hudkontakt-visning fra listen under).
+- [ ] **Dual-H10 benkstart** (beslutninger 21.09 i
+  [docs/architecture/syntetisk-ekg-dual-h10.md](../docs/architecture/syntetisk-ekg-dual-h10.md)):
+  arbitrering per enhet → kun A på ESP32 → kun B på BT-600 → begge samtidig →
+  to rå-strimler + R-topp-synk → syntetisk 2-avlednings-EKG + plan
+  vektorsløyfe i **ny fane** → konsensus-basert HRV/RMSSD. Kalibrering mot
+  12-avlednings-EKG (PDF overføres til `docs/private/`, gitignorert).
 - [ ] **SD-spill-opplasting + dedup/merge i backend** (når nytt Sense-kort er
   her; `INSERT IGNORE` på dedup-nøkkelen).
 - [ ] **v1-migrering** av `recordings/*.jsonl` (3,9 GB) inn i MariaDB.
 - [ ] **Robusthets-finpuss:** full avtak → BLE faller → auto-rekobling kan
   henge ~1 min (STOPP+START gjenoppretter på ~2 s); tydeligere pause-visning.
-- [ ] **Raskere hudkontakt-visning** (umiddelbar telemetri ved kontaktendring).
-- [ ] **EKG-strimmelens y-skala** finjusteres (ser mindre ut etter høydeendring).
+- [ ] **Raskere hudkontakt-visning** (umiddelbar telemetri ved kontaktendring;
+  inngår i UI-finpussen).
+- [ ] **EKG-strimmelens y-skala** finjusteres (ser mindre ut etter
+  høydeendring; inngår i UI-finpussen).
 - [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
-- [ ] **Polar H10 nr. 2 (dual-H10):** to broer/sentraler, arbitrering per
-  enhet, to rå-strimler + hjerteslag-forankret synk, så syntetisk EKG
-  ([docs/architecture/syntetisk-ekg-dual-h10.md](../docs/architecture/syntetisk-ekg-dual-h10.md)).
+- [ ] **Dual-H10 felt** (to belter på én ESP32-bro): venter på nytt Sense-kort;
+  benkarbeidet over går først.
 - [ ] **Batteri/kapsling/effektbudsjett** (Grove Base krever lodding; 1S 1000
   mAh LiPo; 31+ min økt).
 - [ ] **Hendelsesmarkør:** ACC-tapp som MVP; eventuelt ESP32-knapp.

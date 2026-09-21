@@ -1,6 +1,8 @@
 # Syntetisk EKG fra to Polar H10 – planlegging (20.09.2026)
 
-Tidlig tankearbeid (ikke en beslutning) foran H10 nr. 2, bestilt av Jørn.
+Tidlig tankearbeid foran H10 nr. 2, bestilt av Jørn. **Oppdatert 21.09.2026:
+beslutningene i seksjonen nederst er låst (Jørn, chat 5); resten av dokumentet
+er planleggingsgrunnlaget.**
 Se også [field-unit-and-dual-h10-sync.md](./field-unit-and-dual-h10-sync.md)
 for synk-avgjørelsen (hjerteslag-forankret, i etterbehandling).
 
@@ -79,5 +81,51 @@ Fra enklest til mest ambisiøs:
 - RAW ECG: én strimmel, fast klinisk høyde, forberedt for å stable en strimmel
   nr. 2 (én per belte) uten omskriving.
 - RAW ACC: egen fane (20.09).
-- RHYTHM/HRV: uendret inntil videre; blir «syntetisk EKG»-visning når nr. 2 er
-  validert. RR/RMSSD-fremtid avventer den vurderingen.
+- RHYTHM/HRV: uendret inntil videre. ~~Blir «syntetisk EKG»-visning~~ →
+  besluttet 21.09: syntetisk EKG får **egen ny fane** (se under).
+
+## Beslutninger 21.09.2026 (Jørn, chat 5)
+
+Etter faktainnhenting (repo + litteratur) og gjennomgang punkt for punkt:
+
+1. **Mål presisert: 2D, ikke 3D.** To belter gir to projeksjoner av
+   hjertevektoren → en **plan vektorsløyfe (2D-VCG)**, ikke et fullt
+   3D-bilde (det krever tre ~ortogonale avledninger, jf. Frank XYZ/EASI).
+   Leveransen er «best mulig 2-avlednings-syntese + plan vektorsløyfe».
+   Litteratur: rekonstruksjon fra to avledninger tenderer mot
+   populasjonsgjennomsnitt (Frontiers-benchmark 2026, doi:10.3389/fcvm.2026.1856211;
+   M2Eformer, doi:10.3390/bioengineering11030293).
+2. **Oppstart = benk-deling, ett skritt om gangen:** belte A på ESP32-broen
+   (iPhone-hotspot), belte B på BT-600/capture-agenten på raven.
+   Innkjøringssekvens etter UI-finpussen: (a) kun A på ESP32, (b) kun B på
+   BT-600, (c) begge samtidig. **Dual-på-én-ESP32 utsettes** til eget trinn
+   når nytt Sense-kort er montert (coex-risiko + manglende SD-sikkerhetsnett
+   på reservekortet).
+3. **Latens akseptert** (sekund-nivå; R-topp-regresjonen trenger
+   oppvarmingsvindu). Visualisering: EKG-grid/kurve tegnes «washed out» mot
+   høyre kant og skarp der representasjonen anses god.
+4. **Kalibreringsreferanse finnes:** nytt 12-avlednings-EKG av subjektet
+   (2026-09-11, Østlandske Hjertesenter Moss; viser bl.a. T-inversjon og
+   blokk). Overføres fra Jørns laptop til raven som
+   `docs/private/2026-09-11-ekg-12-pkt.pdf` (**gitignorert – helsedata
+   committes aldri**). Brukes etter beste evne til personlig
+   transform-kalibrering.
+5. **Synk-presisjonstak ~7,7 ms akseptert** (130 Hz sampletid; bekreftet av
+   Polar i polar-ble-sdk issue #580 – SetLocalTime har kun 1 s oppløsning,
+   enhetsklokker + R-topp-regresjon er riktig metode).
+6. **Støytolerant HRV/RMSSD bygges på konsensus-slag** fra begge belter
+   (toleransevindu + ACC/SQI-kvalitetsvekting, bSQI-stil), IKKE derivert fra
+   den syntetiske strimmelen. Verktøykasse: WFDB XQRS (R-topp),
+   NeuroKit2 (SQI/`ecg_quality`, Kubios-artefaktkorreksjon).
+7. **Syntetisk strøm genereres kun** (visningslag) i utviklingsfasen;
+   eventuell arkivering i MariaDB vurderes senere. Frame-skjemaet (frosset,
+   v2) røres ikke.
+8. **Belteplassering logges som øktmetadata fra dag én** (eksperimentering
+   med plasseringer forventes). Gjeldende plan: **A** øvre belte, sensor
+   vertikalt, senter ~5 cm under høyre brystvorte; **B** nedre belte rotert,
+   senter ~8 cm under venstre brystvorte.
+9. **Arbitrering per enhet er porten:** global «nyeste start vinner» i
+   backend erstattes av per-enhet-arbitrering som beholder beskyttelsen
+   per belte; regresjonstest med ett belte før to kilder slippes på.
+10. **Ny egen fane** i elduro.no for syntetisk EKG / vektorsløyfe;
+    RHYTHM/HRV består som i dag inntil konsensus-HRV er validert.

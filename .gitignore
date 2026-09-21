@@ -3,6 +3,7 @@ node_modules/
 dist/
 bin/
 recordings/
+docs/private/
 *.log
 .env
 
