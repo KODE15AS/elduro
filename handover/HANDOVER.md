@@ -185,18 +185,29 @@ gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
   strøm etter 3 kick, eller vedvarende 531-avvisning) – trygt fordi backend
   gjensender START. Erstatter behovet for manuell ESP-reboot etter 531-storm.
 
-**Auto-stopp ved avtak (21.09) – batterisparing uten menneskelig inngrep:**
-broen leser hudkontakt-biten i HR-karakteristikken (0x2A37) i alle moduser og
-sender automatisk PMD-stopp når beltet melder «ingen kontakt» i **~20 s** mens
-det strømmer. **Terskelen er bevisst ~20 s (ikke sekunder) så en ekte økt med
-kortvarig dårlig kontakt under kjøring ikke stoppes ved en feil – men langt
-raskere enn dreneringen (Polar Issue 2) rekker å bli et problem**, og godt
-innenfor H10-ens 45 s BLE-timeout (Issue 1). Man skal altså ikke lenger måtte
-trykke STOPP manuelt før avtak. Firmware leser også DIS: firmware-versjon
-(0x2A26) vises i TILKOBLING-fanen; serienr./System ID logges til seriekonsollen
-(ANT+-undersøkelse – ANT+-ID er trolig ikke eksponert over standard BLE).
-Dual-Bluetooth av/på er Polar-proprietær og IKKE lesbar over standard BLE.
-Beltefirmware kan bare OPPDATERES via Polar Flow, ikke fra vår side.
+**Avtak-håndtering (21.09) – batterisparing uten menneskelig inngrep:**
+broen leser hudkontakt-biten i HR-karakteristikken (0x2A37) i alle moduser
+(HR abonneres alltid for biten; HR-rammer videresendes kun i hrv/hr). Når
+beltet melder «ingen kontakt» i **~20 s** mens det strømmer, **PAUSES** økten:
+PMD (EKG/ACC) stoppes så beltet ikke drenerer (Polar Issue 2), men BLE +
+HR-abonnement beholdes, og økten **gjenopptas automatisk** når hudkontakten er
+tilbake – man slipper å trykke START på nytt. Av > 5 min → økten avsluttes og
+beltet slippes. **Terskelen er bevisst ~20 s (ikke sekunder) så en ekte økt
+med kortvarig dårlig kontakt under kjøring ikke pauses ved en feil – men langt
+raskere enn dreneringen rekker å bli et problem**, godt innenfor H10-ens 45 s
+BLE-timeout (Issue 1). Kontaktbit verifisert pålitelig 21.09 (ja↔nei begge
+veier). Firmware leser også DIS firmware-revisjon (0x2A26, første verdi) og
+viser den i TILKOBLING-fanen merket «Firmware (DIS)» – MERK: DIS-strengen kan
+avvike fra Polar Flow-versjonen (Belte A: DIS 5.0.0 vs app 3.3.1). ANT+-ID er
+IKKE i BLE-DIS (System ID = MAC, serienr = «*»). Dual-Bluetooth av/på er
+Polar-proprietær og IKKE lesbar over standard BLE. Beltefirmware kan bare
+OPPDATERES via Polar Flow, ikke fra vår side.
+
+**Visnings-regresjon fikset 21.09:** da øktstyringen ble flyttet til
+TILKOBLING-fanen mistet RAW ECG/HRV skop-nullstillingen som RECORD-knappen
+gjorde. EKG-strimmelen klemte seg i høyre kant ved øktrestart. Fikset: skopet
+selvnullstiller ved elapsed-tilbakehopp (ny økt), og en `resetSeq`-teller lar
+RAW ACC/HRV nullstille sine egne buffere i takt.
 
 **Belte-problem 20.09 kveld – OMTOLKET 21.09 etter Polar KnownIssues-funn:**
 H10 droppet EKG+ACC ~20–30 s inn (`reason=531`) og leste 18 % selv med fersk
