@@ -1357,7 +1357,7 @@ static void telemetry_cb(void *arg)
         (unsigned long)(esp_get_free_heap_size() / 1024),
         s_sd_ok ? "true" : "false", conn ? "true" : "false", (int)ble_rssi,
         g_battery, g_device_name, g_fw_rev,
-        !g_contact_supported ? "unknown" : (g_contact ? "yes" : "no"),
+        (!conn || !g_contact_supported) ? "unknown" : (g_contact ? "yes" : "no"),
         g_streaming ? "true" : "false",
         (unsigned long long)(esp_timer_get_time() / 1000000),
         s_time_synced ? "ntp-synced" : "unsynced");
