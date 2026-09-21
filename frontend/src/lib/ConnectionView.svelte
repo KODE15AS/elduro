@@ -249,7 +249,9 @@
           <table>
             <tbody>
               <tr><td>Enhet</td><td>{tm?.device || st?.device || '-'}</td></tr>
+              <tr><td>Firmware</td><td>{tm?.fw || '-'}</td></tr>
               <tr><td>Batteri</td><td>{tm && tm.battery >= 0 ? tm.battery + ' %' : '-'}</td></tr>
+              <tr><td>Hudkontakt</td><td>{tm?.contact === 'yes' ? 'ja' : tm?.contact === 'no' ? 'nei (tas av?)' : '-'}</td></tr>
               <tr><td>BLE-link</td><td>{tm ? (tm.ble_connected ? 'tilkoblet' : 'frakoblet') : '-'}</td></tr>
               <tr><td>BLE-RSSI</td><td>{tm?.ble_connected && tm.ble_rssi ? tm.ble_rssi + ' dBm' : '-'}</td></tr>
             </tbody>

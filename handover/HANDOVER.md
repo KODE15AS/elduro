@@ -185,6 +185,19 @@ gjenopptatt uten brukerinngrep. Feltgjenopptak virker ende-til-ende.
   strøm etter 3 kick, eller vedvarende 531-avvisning) – trygt fordi backend
   gjensender START. Erstatter behovet for manuell ESP-reboot etter 531-storm.
 
+**Auto-stopp ved avtak (21.09) – batterisparing uten menneskelig inngrep:**
+broen leser hudkontakt-biten i HR-karakteristikken (0x2A37) i alle moduser og
+sender automatisk PMD-stopp når beltet melder «ingen kontakt» i **~20 s** mens
+det strømmer. **Terskelen er bevisst ~20 s (ikke sekunder) så en ekte økt med
+kortvarig dårlig kontakt under kjøring ikke stoppes ved en feil – men langt
+raskere enn dreneringen (Polar Issue 2) rekker å bli et problem**, og godt
+innenfor H10-ens 45 s BLE-timeout (Issue 1). Man skal altså ikke lenger måtte
+trykke STOPP manuelt før avtak. Firmware leser også DIS: firmware-versjon
+(0x2A26) vises i TILKOBLING-fanen; serienr./System ID logges til seriekonsollen
+(ANT+-undersøkelse – ANT+-ID er trolig ikke eksponert over standard BLE).
+Dual-Bluetooth av/på er Polar-proprietær og IKKE lesbar over standard BLE.
+Beltefirmware kan bare OPPDATERES via Polar Flow, ikke fra vår side.
+
 **Belte-problem 20.09 kveld – OMTOLKET 21.09 etter Polar KnownIssues-funn:**
 H10 droppet EKG+ACC ~20–30 s inn (`reason=531`) og leste 18 % selv med fersk
 celle. Polar-dokumentert forklaring funnet i
