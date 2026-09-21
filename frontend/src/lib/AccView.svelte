@@ -65,8 +65,9 @@
       if (m.t === 'ecg') {
         // Kun klokkeanker + motor; kurven vises i RAW ECG-fanen.
         scope.ingestEcg(m)
-        // Skopet nullstilte seg (ny økt) -> nullstill våre ACC-buffere også.
-        if (scope.resetSeq !== seenResetSeq) { seenResetSeq = scope.resetSeq; resetBuffers() }
+        // Skopet nullstilte seg (ny økt) -> tøm KUN våre ACC-buffere (IKKE
+        // scope.reset, som ville bumpe resetSeq igjen -> uendelig løkke).
+        if (scope.resetSeq !== seenResetSeq) { seenResetSeq = scope.resetSeq; resetAccBuffers() }
       } else if (m.t === 'acc') {
         const E = scope.elapsedOf(m)
         if (Number.isNaN(scope.hostElapsedOffset)) return
@@ -104,8 +105,8 @@
     return () => cancelAnimationFrame(raf)
   })
 
-  function resetBuffers() {
-    scope.reset()
+  // Tømmer KUN ACC-ringbufferne (kalles ved skop-reset og kildebytte).
+  function resetAccBuffers() {
     accX = new Float32Array(accCap)
     accY = new Float32Array(accCap)
     accZ = new Float32Array(accCap)
@@ -116,10 +117,11 @@
     accTotal = 0
   }
 
-  // Bytte av kilde (dual-H10) gir et rent skop.
+  // Bytte av kilde (dual-H10) gir et rent skop + tomme ACC-buffere.
   $effect(() => {
     void selected
-    resetBuffers()
+    scope.reset()
+    resetAccBuffers()
   })
 
   function togglePause() {
