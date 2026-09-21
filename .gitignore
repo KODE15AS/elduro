@@ -1,7 +1,7 @@
 target/
 node_modules/
 dist/
-bin/
+/bin/
 recordings/
 docs/private/
 *.log

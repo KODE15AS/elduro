@@ -1,4 +1,5 @@
 mod db;
+mod synth;
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -48,6 +49,10 @@ struct AppState {
     // Kilder låst til ULIKE belter arbitreres per enhet; alt annet beholder
     // global «nyeste start vinner» (19.09-beskyttelsen mot belte-slåssing).
     pins: Vec<(String, String)>,
+    // Syntetisk estimert EKG (dual-H10): mates med alle 'ecg'-rammer og
+    // kringkaster fusjonerte rammer som source "synth". Kun visningslag -
+    // arkiveres IKKE (beslutning 21.09: avledede lag genereres).
+    synth: Mutex<synth::SynthCore>,
 }
 
 fn parse_pins() -> Vec<(String, String)> {
@@ -113,6 +118,7 @@ async fn main() {
         ingest: db::Ingest::from_env(),
         wanted: Mutex::new(HashMap::new()),
         pins: parse_pins(),
+        synth: Mutex::new(synth::SynthCore::new()),
     });
     if !state.pins.is_empty() {
         println!("device pins: {:?}", state.pins);
@@ -291,6 +297,47 @@ async fn agent_ws(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> i
     ws.on_upgrade(move |socket| handle_agent(socket, state))
 }
 
+// Mat en 'ecg'-ramme inn i syntesemotoren og kringkast resultatchunks til UI.
+async fn feed_synth(state: &Arc<AppState>, v: &serde_json::Value) {
+    let (Some(source), Some(dev_ns)) = (v["source"].as_str(), v["ts_device_ns"].as_u64()) else {
+        return;
+    };
+    let Some(arr) = v["samples"].as_array() else {
+        return;
+    };
+    let samples: Vec<f64> = arr.iter().filter_map(|x| x.as_f64()).collect();
+    let host_ns = v["ts_host_ns"].as_u64().unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    });
+    let chunks = state
+        .synth
+        .lock()
+        .await
+        .ingest_ecg(source, dev_ns, &samples, host_ns);
+    for c in chunks {
+        let msg = serde_json::json!({
+            "t": "ecg",
+            "source": "synth",
+            "samples": c.samples_uv,
+            "elapsed_ms": (c.elapsed_s * 1000.0).round(),
+            "ts_host_ns": host_ns,
+            "total": c.total,
+            "gaps": 0,
+            "synth": {
+                "basis": c.basis,
+                "conf": (c.conf * 100.0).round() / 100.0,
+                "offset_ms": (c.offset_ms * 10.0).round() / 10.0,
+                "drift_ppm": (c.drift_ppm * 10.0).round() / 10.0,
+                "residual_ms": (c.residual_ms * 100.0).round() / 100.0,
+            },
+        });
+        let _ = state.ui_tx.send(msg.to_string());
+    }
+}
+
 async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
     let (mut tx, mut rx) = socket.split();
 
@@ -356,6 +403,12 @@ async fn handle_agent(socket: WebSocket, state: Arc<AppState>) {
                             let msg_t = v["t"].as_str().map(str::to_owned);
                             match msg_t.as_deref() {
                                 Some("ecg") | Some("acc") | Some("hr") => {
+                                    // Syntetisk EKG: EKG-rammer mates inn i
+                                    // fusjonsmotoren; ferdige chunks kringkastes
+                                    // som source "synth" (kun visning, ikke arkiv).
+                                    if msg_t.as_deref() == Some("ecg") {
+                                        feed_synth(&state, &v).await;
+                                    }
                                     state.ingest.send(db::Msg::Frame { v });
                                 }
                                 Some("status") => {
