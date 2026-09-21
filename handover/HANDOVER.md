@@ -38,10 +38,23 @@ UI-finpuss og dual-H10-benkarbeid går først.
   EKG y-skala og raskere hudkontakt-visning fra listen under).
 - [ ] **Dual-H10 benkstart** (beslutninger 21.09 i
   [docs/architecture/syntetisk-ekg-dual-h10.md](../docs/architecture/syntetisk-ekg-dual-h10.md)):
-  arbitrering per enhet → kun A på ESP32 → kun B på BT-600 → begge samtidig →
-  to rå-strimler + R-topp-synk → syntetisk 2-avlednings-EKG + plan
+  ~~arbitrering per enhet → kun A på ESP32 → kun B på BT-600 → begge samtidig~~
+  **LEVERT 21.09 kveld: begge belter strømmer samtidig til arkivet** (A på
+  ESP32, B på BT-600 med `--device`-lås; `ELDURO_DEVICE_PINS` i `.env`).
+  Gjenstår: to rå-strimler + R-topp-synk → syntetisk 2-avlednings-EKG + plan
   vektorsløyfe i **ny fane** → konsensus-basert HRV/RMSSD. Kalibrering mot
-  12-avlednings-EKG (PDF overføres til `docs/private/`, gitignorert).
+  12-avlednings-EKG (referansebilde ligger i `docs/private/`, gitignorert).
+  Lærdommer fra benkstarten: (1) drept sentral gir foreldreløs PMD-strøm i
+  beltet → agenten fikk stopp-før-start; (2) belte-reset (knappcelle) sletter
+  beltets bindingsnøkler → slett BlueZ-bindingen og par på nytt manuelt
+  (`bluetoothctl pair` – btleplug har ingen paringsagent); (3) PMD-kontroll
+  krever kryptert link, feiler som «Not paired»/«Not connected» uten bond.
+- [ ] **frames.device_id = belte-ID, ikke kilde:** ingest bruker i dag source
+  som device_id (rammene på wire mangler belte-id). Må fikses før
+  SD-opplastingens dedup (samme belte via to stier skal dedupe på belte).
+- [ ] **Småfunn 21.09:** UI-hjelpeteksten «Nyeste start vinner …» er utdatert
+  etter per-enhet-arbitrering (tas i UI-finpussen); én UI-WS-melding observert
+  med ugyldig kontrolltegn i JSON (ettergås).
 - [ ] **SD-spill-opplasting + dedup/merge i backend** (når nytt Sense-kort er
   her; `INSERT IGNORE` på dedup-nøkkelen).
 - [ ] **v1-migrering** av `recordings/*.jsonl` (3,9 GB) inn i MariaDB.
