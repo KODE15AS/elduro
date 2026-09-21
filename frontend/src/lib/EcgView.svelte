@@ -3,6 +3,11 @@
   import type { EcgStreamMsg } from './types'
   import { EcgScope } from './ecgScope'
 
+  // RAW ECG (finpuss 21.09.2026): ingen kildevelger - fanen viser automatisk
+  // strømmen(e) som faktisk kjører. Ved dual-H10 stables to like kliniske
+  // strimler: belte A (ESP32) øverst, belte B (BT-600) under (fast rekkefølge,
+  // avtalt med Jørn 21.09). Øktstyring bor på TILKOBLING-fanen.
+
   interface Props {
     sources: Record<string, string>
     send: (cmd: object) => void
@@ -10,33 +15,27 @@
     onstatus: (source: string) => { state: string; detail: string; device: string } | null
   }
   let { sources, send, register, onstatus }: Props = $props()
+  void send // øktstyring skjer på TILKOBLING-fanen
 
   const ECG_FS = 130
   const SPEEDS = [25, 50] // mm/s selectable
-  // ACC ble flyttet til egen RAW ACC-fane 20.09.2026 for å gjøre plass til to
-  // EKG-strimler over hverandre når H10 nr. 2 kommer (dual-H10).
+  const MAX_STRIPS = 2
 
-  // Shared clinical-ECG engine: the RHYTHM/HRV tab runs this same code, so the
-  // live ECG signal path (baseline, detection, motor, drawing) is identical.
-  const scope = new EcgScope()
+  // Ett skop per kilde (ikke-reaktivt; svelte-state speiles per frame).
+  const scopes: Record<string, EcgScope> = {}
+  function scopeFor(src: string): EcgScope {
+    return (scopes[src] ??= new EcgScope())
+  }
 
-  // Øktstyring bor på TILKOBLING-fanen (20.09.2026); denne visningen følger
-  // aktiv strøm for valgt kilde og har kun visningskontroller (pause, fart).
-  let selected = $state('')
-  let streamingSince = 0 // når status ble 'streaming', for oppvarmings-overlay
   let paused = $state(false)
   let speed = $state(25)
-  let ecgTotal = $state(0)
-  let gaps = $state(0)
-  let deviceTimeS = $state(0)
-  let ecgFresh = $state(false)
-  let hrBpm = $state<number | null>(null)
-  let ecgCanvas: HTMLCanvasElement | undefined = $state()
+  let active: string[] = $state([])
+  let canvases: (HTMLCanvasElement | undefined)[] = $state([undefined, undefined])
+  // Speilede visningsverdier per aktiv strimmel (indeks følger `active`).
+  let mirror: { bpm: number | null; total: number; gaps: number; fresh: boolean }[] = $state([])
 
-  const sourceIds = $derived(Object.keys(sources))
-  const status = $derived(selected ? onstatus(selected) : null)
-  const recording = $derived(ecgFresh)
-  const live = $derived(!!status && status.state === 'streaming')
+  const lastSeen: Record<string, number> = {}
+  const streamingSince: Record<string, number> = {}
 
   function friendlyLabel(id: string): string {
     if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
@@ -44,57 +43,62 @@
     if (id.startsWith('esp32-')) return 'ESP32 - Polar H10'
     return `native agent (${id.split(':')[0]})`
   }
-  function preferredSource(ids: string[]): string {
-    return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''
+  // Fast rekkefølge: belte A (ESP32) øverst, deretter BT-600, så andre.
+  function orderKey(id: string): string {
+    if (id.startsWith('esp32-')) return '0' + id
+    if (id === 'raven:hci1') return '1' + id
+    return '2' + id
   }
 
-  $effect(() => {
-    if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
-  })
+  function computeActive(perf: number): string[] {
+    const ids = Object.keys(sources).filter((id) => id !== 'synth')
+    const act = ids.filter((id) => {
+      const st = onstatus(id)
+      const fresh = perf - (lastSeen[id] ?? 0) < 3000
+      return fresh || st?.state === 'streaming'
+    })
+    act.sort((a, b) => orderKey(a).localeCompare(orderKey(b)))
+    return act.slice(0, MAX_STRIPS)
+  }
 
   onMount(() => {
     register((m: EcgStreamMsg) => {
-      if (m.source !== selected) return
-      if (m.t === 'ecg') {
-        scope.ingestEcg(m)
-        ecgTotal = scope.ecgTotal
-        gaps = scope.gaps
-        deviceTimeS = scope.deviceTimeS
-      }
+      if (m.t !== 'ecg' || (m as any).source === 'synth') return
+      const src = (m as any).source as string
+      scopeFor(src).ingestEcg(m as any)
+      lastSeen[src] = performance.now()
     })
     let raf = 0
     const loop = () => {
       const perf = performance.now()
-      ecgFresh = perf - scope.lastEcgMs < 1500
-      if (live && !streamingSince) streamingSince = perf
-      if (!live) streamingSince = 0
-      // The motor follows live frames (sessions are started from the
-      // CONNECTION tab); PAUSE freezes it locally.
-      scope.tick(perf, ecgFresh && !paused)
-      hrBpm = scope.hrBpm
-      drawEcg()
+      const act = computeActive(perf)
+      // Oppdater reaktiv liste bare ved reell endring (unngå re-render-storm).
+      if (act.join('|') !== active.join('|')) active = act
+      const mir: typeof mirror = []
+      act.forEach((src, i) => {
+        const scope = scopeFor(src)
+        const fresh = perf - scope.lastEcgMs < 1500
+        const st = onstatus(src)
+        const live = st?.state === 'streaming'
+        if (live && !streamingSince[src]) streamingSince[src] = perf
+        if (!live) streamingSince[src] = 0
+        scope.tick(perf, fresh && !paused)
+        mir.push({ bpm: scope.hrBpm, total: scope.ecgTotal, gaps: scope.gaps, fresh })
+        const canvas = canvases[i]
+        if (canvas) drawStrip(canvas, scope, src, live, perf)
+      })
+      mirror = mir
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   })
 
-  function resetBuffers() {
-    scope.reset()
-    ecgTotal = 0
-    gaps = 0
-    hrBpm = null
-  }
-
-  // Bytte av kilde (dual-H10 senere) skal gi et rent skop.
-  $effect(() => {
-    void selected
-    resetBuffers()
-  })
-
   function togglePause() {
-    if (paused) { scope.requestAnchor(); paused = false }
-    else paused = true
+    if (paused) {
+      for (const s of Object.values(scopes)) s.requestAnchor()
+      paused = false
+    } else paused = true
   }
 
   function prepare(canvas: HTMLCanvasElement): [CanvasRenderingContext2D, number, number] | null {
@@ -113,20 +117,18 @@
     return [ctx, w, h]
   }
 
-  function drawEcg() {
-    if (!ecgCanvas) return
-    const p = prepare(ecgCanvas)
+  function drawStrip(canvas: HTMLCanvasElement, scope: EcgScope, src: string, live: boolean, perf: number) {
+    const p = prepare(canvas)
     if (!p) return
     const [ctx, w, h] = p
     const drew = scope.drawScope(ctx, w, h, speed)
 
     if (drew < 2) {
-      // Warmup overlay: the H10 withholds its whole PMD stream (ECG + ACC)
-      // until it enters "measuring" state, which can take ~30 s with dry
-      // electrodes. Show a friendly status instead of a blank scrolling grid.
+      // Oppvarmings-overlay: H10 holder PMD-strømmen tilbake til "measuring"
+      // (~5-35 s med tørre elektroder).
       const cx = w / 2, cy = h / 2
-      const tsec = live && streamingSince ? (performance.now() - streamingSince) / 1000 : 0
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350)
+      const tsec = live && streamingSince[src] ? (perf - streamingSince[src]) / 1000 : 0
+      const pulse = 0.5 + 0.5 * Math.sin(perf / 350)
       ctx.save()
       ctx.textAlign = 'center'
       if (live) {
@@ -135,12 +137,12 @@
       }
       ctx.fillStyle = '#444'
       ctx.font = 'bold 17px sans-serif'
-      ctx.fillText(live ? 'Polar H10 preparing signal...' : 'start the session from the CONNECTION tab', cx, cy + 16)
+      ctx.fillText(live ? 'Polar H10 preparing signal...' : 'venter på strøm', cx, cy + 16)
       if (live) {
         ctx.fillStyle = '#888'
         ctx.font = '13px sans-serif'
         ctx.fillText(
-          `waiting for first ECG frame - ${tsec.toFixed(0)} s  (can take ~30 s with dry electrodes; moisten for a faster start)`,
+          `waiting for first ECG frame - ${tsec.toFixed(0)} s  (can take ~30 s with dry electrodes)`,
           cx, cy + 38,
         )
       }
@@ -148,57 +150,59 @@
       ctx.restore()
     }
 
-    // NO SIGNAL when the live signal is too noisy or no beat has been seen lately
+    // NO SIGNAL når signalet er for støyete eller ingen slag er sett nylig
     if (drew >= 2 && (scope.poorState || scope.nowT - scope.lastPeakT > 2)) {
       ctx.fillStyle = '#b06a00'
       ctx.font = 'bold 13px sans-serif'
       ctx.fillText('NO SIGNAL', w - 96, 22)
     }
   }
-
 </script>
 
 <div class="ecg">
   <div class="bar">
-    <label>
-      Source
-      <select bind:value={selected}>
-        {#if !sourceIds.length}
-          <option value="">no agent connected</option>
-        {/if}
-        {#each sourceIds as id (id)}
-          <option value={id}>{friendlyLabel(id)}</option>
-        {/each}
-      </select>
-    </label>
-    <button class="pause" disabled={!recording && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
-    <span class="bpm">&hearts; <b>{hrBpm ?? '--'}</b> bpm</span>
+    <button class="pause" disabled={!active.length && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
     <div class="speed">
       {#each SPEEDS as s (s)}
         <button class="sp" class:on={speed === s} onclick={() => (speed = s)}>{s}</button>
       {/each}
       <span class="unit">mm/s</span>
     </div>
-    <div class="stats">
-      {#if status}
-        <span class="state" class:err={status.state === 'error'}>
-          {status.state}{status.detail ? ' - ' + status.detail : ''}
-        </span>
-      {:else}
-        <span class="state">idle - start from the CONNECTION tab</span>
-      {/if}
-      <span title="Total ECG samples received this session">{ecgTotal.toLocaleString()} ECG samples</span>
-      <span title="Seconds of ECG recorded">{(ecgTotal / ECG_FS).toFixed(1)} s rec</span>
-      <span class:warn={gaps > 0} title="Dropped ECG packets (missed BLE frames). Poor skin contact shows as NO SIGNAL on the strip, not here.">{gaps} dropped</span>
-      <span>device clock {deviceTimeS.toFixed(3)} s</span>
+    {#if !active.length}
+      <span class="state">ingen aktiv strøm - start økten fra TILKOBLING-fanen</span>
+    {/if}
+  </div>
+
+  {#if active.length}
+    {#each active as src, i (src)}
+      {@const st = onstatus(src)}
+      {@const m = mirror[i]}
+      <div class="strip">
+        <div class="striphead">
+          <b>{friendlyLabel(src)}</b>
+          {#if st?.device}<span class="dev">{st.device}</span>{/if}
+          <span class="bpm">&hearts; <b>{m?.bpm ?? '--'}</b> bpm</span>
+          <span class="stats">
+            <span class="state" class:err={st?.state === 'error'}>{st ? st.state + (st.detail ? ' - ' + st.detail : '') : ''}</span>
+            <span>{(m?.total ?? 0).toLocaleString()} samples</span>
+            <span>{((m?.total ?? 0) / ECG_FS).toFixed(1)} s</span>
+            <span class:warn={(m?.gaps ?? 0) > 0}>{m?.gaps ?? 0} dropped</span>
+          </span>
+        </div>
+        <div class="scope ecgscope">
+          <canvas bind:this={canvases[i]}></canvas>
+          <div class="scale">ECG - 130 Hz - {speed} mm/s - 10 mm/mV</div>
+        </div>
+      </div>
+    {/each}
+  {:else}
+    <div class="scope ecgscope idle">
+      <div class="idlemsg">
+        Ingen aktiv strøm. Start økten fra <b>TILKOBLING</b>-fanen - strimlene
+        dukker opp her av seg selv (én per belte ved dual-H10).
+      </div>
     </div>
-  </div>
-  <!-- Én strimmel i dag; når H10 nr. 2 kommer stables to like strimler her
-       (én per belte), derfor beholder strimmelen klinisk fast høyde. -->
-  <div class="scope ecgscope">
-    <canvas bind:this={ecgCanvas}></canvas>
-    <div class="scale">ECG - 130 Hz - {speed} mm/s - 10 mm/mV - red R-peak, amber ectopic</div>
-  </div>
+  {/if}
 </div>
 
 <style>
@@ -209,20 +213,13 @@
     padding: 14px;
     box-sizing: border-box;
     gap: 12px;
+    overflow-y: auto;
   }
   .bar {
     display: flex;
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
-  }
-  .bar select {
-    margin-left: 6px;
-    font-family: var(--font-body);
-    padding: 4px 8px;
-    border: 1px solid var(--color-line);
-    border-radius: 6px;
-    background: var(--color-card);
   }
   button {
     font-family: var(--font-display);
@@ -273,23 +270,26 @@
     font-size: 12px;
     color: var(--color-slate);
   }
-  .stats {
+  .strip { display: flex; flex-direction: column; gap: 6px; }
+  .striphead {
     display: flex;
-    gap: 16px;
+    align-items: baseline;
+    gap: 14px;
     font-size: 13.5px;
     color: var(--color-slate);
     flex-wrap: wrap;
   }
-  .stats .warn {
-    color: var(--color-warning);
-    font-weight: 600;
+  .striphead > b {
+    font-family: var(--font-display);
+    letter-spacing: 1px;
+    color: var(--color-ink, #222);
+    font-size: 13px;
   }
-  .stats .state {
-    text-transform: lowercase;
-  }
-  .stats .state.err {
-    color: var(--color-error);
-  }
+  .striphead .dev { font-size: 12px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; }
+  .stats .warn { color: var(--color-warning); font-weight: 600; }
+  .state { text-transform: lowercase; }
+  .state.err { color: var(--color-error); }
   .scope {
     position: relative;
     background: var(--color-card);
@@ -298,10 +298,11 @@
     overflow: hidden;
   }
   .ecgscope {
-    /* Klinisk strimmelhøyde (~+/-2 mV). Fast høyde med vilje: neste strimmel
-       (H10 nr. 2) stables under denne. */
+    /* Klinisk strimmelhøyde (~+/-2 mV), fast med vilje - to strimler stables. */
     flex: 0 0 220px;
   }
+  .ecgscope.idle { display: flex; align-items: center; justify-content: center; }
+  .idlemsg { color: var(--color-slate); font-size: 14px; max-width: 480px; text-align: center; }
   canvas {
     position: absolute;
     inset: 0;
@@ -319,4 +320,3 @@
     border-radius: 6px;
   }
 </style>
-

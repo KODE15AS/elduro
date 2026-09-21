@@ -2,139 +2,102 @@
   import { onMount } from 'svelte'
   import { EcgScope } from './ecgScope'
 
+  // SYNTETISK EKG (21.09.2026, erstatter RHYTHM/HRV-fanen etter beslutning):
+  // viser det backend-fusjonerte «syntetisk estimert EKG» fra dual-H10
+  // (kilde "synth"), alltid live, uten kildevelger. Grunnlaget (A+B eller én
+  // avledning solo) og konfidens vises åpent; strimmelen tegnes «washed out»
+  // mot høyre kant der estimatet ennå ikke er modent (avtalt med Jørn).
+  // Tachogram (nativ RR grønn vs EKG-derivert rød) og rullende RMSSD består
+  // som før - nativ RR hentes fra det ferskeste beltet (A foretrukket).
+
+  // Kun rammefeeden brukes; øktstyring og kildevalg finnes ikke her lenger.
   interface Props {
-    src?: string
-    sources?: Record<string, string>
-    send?: (cmd: object) => void
     register?: (fn: (m: any) => void) => void
-    onstatus?: (source: string) => { state: string; detail: string; device: string } | null
   }
-  let {
-    src = '/sample-hrv.json',
-    sources = {},
-    send,
-    register,
-    onstatus,
-  }: Props = $props()
+  let { register }: Props = $props()
 
-  const STRIP_WIN = 6 // seconds shown in the rhythm strip (sample mode)
-  const TACHO_WIN = 20 // tachogram scroll window (right->left), roughly follows the strip
-  const RMSSD_VIEW = 120 // scrolling RMSSD span in live mode
-  const RMSSD_HALF = 15 // centered RMSSD window half-width -> 30 s window
+  const TACHO_WIN = 20
+  const RMSSD_VIEW = 120
+  const RMSSD_HALF = 15
   const RMSSD_STEP = 2
-  // Fixed axes for the live plots: an outlier clips off the plot instead of
-  // rescaling everything on a single bad value.
-  const RR_LO = 400, RR_HI = 1200 // tachogram y-axis (ms)
-  const RMSSD_HI = 150 // RMSSD y-axis (ms)
-  const PX_PER_MM = 96 / 25.4 // ~96 dpi CSS millimetre, matches RAW ECG
-  const MM_PER_MV = 10 // clinical gain 10 mm/mV, matches RAW ECG
-  const SPEEDS = [25, 50] // mm/s selectable, clinical paper speed for the strip
+  const RR_LO = 400, RR_HI = 1200
+  const RMSSD_HI = 150
+  const PX_PER_MM = 96 / 25.4
+  const SPEEDS = [25, 50]
 
-  // Shared clinical-ECG engine: the RAW ECG tab runs this same code, so the live
-  // rhythm strip's signal path (baseline, detection, motor, drawing) is identical.
+  // Samme kliniske motor som RAW ECG - matet med den syntetiske strømmen.
   const scope = new EcgScope()
 
-  let mode = $state<'sample' | 'live'>('sample')
-  let bundle: any = $state(null)
-  let error = $state('')
-  let stripStart = $state(0)
-
-  // live capture state. Øktstyring bor på TILKOBLING-fanen (20.09.2026);
-  // denne visningen følger aktiv strøm for valgt kilde.
-  let selected = $state('')
   let lastRr = $state<number | null>(null)
   let instHr = $state<number | null>(null)
-  const sourceIds = $derived(Object.keys(sources))
-  const liveStatus = $derived(selected && onstatus ? onstatus(selected) : null)
   let liveFresh = $state(false)
   let hrFresh = $state(false)
-  const running = $derived(liveFresh)
-
-  // Auto-select a sensible source (same pattern as EcgView): without this the
-  // selection resets to '' on every tab switch and GO LIVE stays disabled.
-  function preferredSource(ids: string[]): string {
-    return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''
-  }
-  $effect(() => {
-    if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
-  })
+  let basis = $state('')
+  let conf = $state(0)
+  let residualMs = $state<number | null>(null)
+  let driftPpm = $state<number | null>(null)
+  let hrSource = $state('')
 
   let stripCanvas: HTMLCanvasElement
   let tachoCanvas: HTMLCanvasElement
   let rmssdCanvas: HTMLCanvasElement
 
-  // ---- live native-RR accumulators (ECG lives in `scope`) ----
+  // Nativ-RR-akkumulatorer (den syntetiske EKG-en bor i `scope`).
   let rrVals: number[] = []
   let rrTimes: number[] = []
   let lastHrMs = 0
+  const hrSeen: Record<string, number> = {} // src -> perf ms for siste hr-ramme
 
-  let speed = $state(25) // mm/s clinical paper speed for the strip
+  let speed = $state(25)
   let paused = $state(false)
-  // throttled RMSSD windows
   let liveWins: any[] = []
   let lastWinMs = 0
-
-  function resetLive() {
-    scope.reset()
-    rrVals = []
-    rrTimes = []
-    liveWins = []
-    lastRr = null
-    instHr = null
-  }
-
-  function preferHrvSource(ids: string[]): string {
-    return (
-      ids.find((i) => i.startsWith('raven:hci1')) ??
-      ids.find((i) => !i.startsWith('raven:hci0')) ??
-      ids[0] ??
-      ''
-    )
-  }
-  function friendlyLabel(id: string): string {
-    if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
-    if (id.startsWith('raven:')) return 'Raven - ASUS BT-600 USB'
-    if (id.startsWith('esp32-')) return 'ESP32 - Polar H10'
-    return `native agent (${id.split(':')[0]})`
-  }
-
-  $effect(() => {
-    if (!selected && sourceIds.length) selected = preferHrvSource(sourceIds)
-  })
-
-  async function loadSample() {
-    try {
-      const r = await fetch(src)
-      if (!r.ok) throw new Error(`fetch ${src}: ${r.status}`)
-      bundle = await r.json()
-    } catch (e) {
-      error = String(e)
-    }
-  }
-
+  let bundle: any = null
   let seenResetSeq = 0
 
+  function friendlyBasis(b: string): string {
+    if (b === 'A+B') return 'belte A + belte B (fusjon)'
+    if (b.startsWith('esp32-')) return 'kun belte A / ESP32 (ingen fusjon)'
+    if (b.startsWith('raven:')) return 'kun belte B / BT-600 (ingen fusjon)'
+    return b ? `kun ${b} (ingen fusjon)` : '-'
+  }
+  // Nativ RR: foretrekk ESP32 (belte A) når fersk, ellers ferskeste kilde.
+  function pickHrSource(perf: number): string {
+    const fresh = Object.entries(hrSeen).filter(([, t]) => perf - t < 4000)
+    if (!fresh.length) return ''
+    const esp = fresh.find(([s]) => s.startsWith('esp32-'))
+    if (esp) return esp[0]
+    fresh.sort((a, b) => b[1] - a[1])
+    return fresh[0][0]
+  }
+
   function onFrame(m: any) {
-    if (mode !== 'live' || m.source !== selected) return
-    if (m.t === 'ecg') {
-      // Same engine as RAW ECG: baseline removal + sticky detection happen inside.
+    if (m.t === 'ecg' && m.source === 'synth') {
       scope.ingestEcg(m)
-      // Skopet nullstilte seg (ny økt) -> nullstill RR-akkumulatorene også.
+      if (m.synth) {
+        basis = m.synth.basis ?? ''
+        conf = m.synth.conf ?? 0
+        residualMs = m.synth.residual_ms ?? null
+        driftPpm = m.synth.drift_ppm ?? null
+      }
       if (scope.resetSeq !== seenResetSeq) {
         seenResetSeq = scope.resetSeq
         rrVals = []; rrTimes = []; liveWins = []; lastRr = null; instHr = null
       }
-    } else if (m.t === 'hr') {
-      lastHrMs = performance.now()
+    } else if (m.t === 'hr' && m.source !== 'synth') {
+      const perf = performance.now()
+      hrSeen[m.source] = perf
+      if (m.source !== hrSource) return // kun valgt kilde mater tachogrammet
+      lastHrMs = perf
       const rr = (m.rr as number[]) ?? []
       if (!rr.length) return
-      const tEnd = (m.ts as number) / 1000
+      // Anker slagene ved den syntetiske strimmelens ferskeste tid (ulike
+      // kilder har ulike elapsed-klokker; synth-tidslinjen er fellesnevneren).
+      const tEnd = scope.ecgNewestT
+      if (tEnd <= 0) return
       let acc = 0
       const tail = rr.map((v) => (acc += v))
       const total = acc
-      // Anchor the packet's last beat near tEnd but force the beat clock to be
-      // strictly increasing, so a jittered packet can never place a point to
-      // the left of an earlier one (was the "points go back in time" bug).
       let prev = rrTimes.length ? rrTimes[rrTimes.length - 1] : -Infinity
       rr.forEach((v, i) => {
         let t = tEnd - (total - tail[i]) / 1000
@@ -153,7 +116,7 @@
     }
   }
 
-  // ---------- HRV math (mirrors analysis/hrv.py) ----------
+  // ---------- HRV-matematikk (speiler analysis/hrv.py) ----------
   function flagArtifacts(rr: number[]): boolean[] {
     const bad = rr.map((v) => v < 300 || v > 2000)
     const k = 5
@@ -260,14 +223,12 @@
     return out
   }
 
-  function buildLiveBundle() {
+  function buildBundle() {
     const rr = rrVals.slice()
     const times = rrTimes.slice()
     const trailIdx: number[] = []
     for (let i = 0; i < times.length; i++) if (times[i] >= scope.ecgNewestT - 30) trailIdx.push(i)
     const sess = bandOf(trailIdx.map((i) => rr[i]))
-    // ECG-derived RR from the shared engine's sticky peaks, so it matches the
-    // strip markers exactly and stops flickering.
     const pk = scope.peaks
     const ecgRrT: number[] = []
     const ecgRrV: number[] = []
@@ -277,7 +238,6 @@
       ecgRrV.push((pk[i].t - pk[i - 1].t) * 1000)
     }
     return {
-      ecgReady: scope.ecgNewestT > 0,
       ecgRr: { t: ecgRrT, v: ecgRrV },
       windows: liveWins,
       session: {
@@ -288,20 +248,8 @@
           pct_corrected: sess.pct,
         },
       },
-      _axisRight: scope.nowT, // right edge = now (fixed motor)
-      _lead: scope.nowT,
+      _axisRight: scope.nowT,
     }
-  }
-
-  function tMax(): number {
-    if (!bundle) return 1
-    let m = 1
-    const n = bundle.tachogram?.native
-    const e = bundle.tachogram?.ecg_derived
-    if (n?.t?.length) m = Math.max(m, n.t[n.t.length - 1])
-    if (e?.t?.length) m = Math.max(m, e.t[e.t.length - 1])
-    if (bundle.ecg?.mv?.length) m = Math.max(m, bundle.ecg.start_s + bundle.ecg.mv.length / bundle.ecg.fs)
-    return m
   }
 
   function fit(canvas: HTMLCanvasElement): [CanvasRenderingContext2D, number, number] | null {
@@ -328,73 +276,50 @@
 
   function drawStrip() {
     if (!stripCanvas) return
-    // LIVE: the shared clinical-ECG engine draws grid + trace + sticky peaks,
-    // identical to the RAW ECG tab.
-    if (mode === 'live') {
-      const f = fit(stripCanvas)
-      if (!f) return
-      const [ctx, w, h] = f
-      scope.drawScope(ctx, w, h, speed)
-      return
-    }
-
-    // SAMPLE: offline bundle viewer (static recording), drawn on the same paper.
-    if (!bundle?.ecg?.mv) return
     const f = fit(stripCanvas)
     if (!f) return
     const [ctx, w, h] = f
-    const fs = bundle.ecg.fs
-    const mv = bundle.ecg.mv
-    const start_s = bundle.ecg.start_s
-    const t1 = stripStart + STRIP_WIN
-    const t0 = t1 - STRIP_WIN
-    const leadT = t1
-    const centerY = h / 2
-    const spd = w / PX_PER_MM / STRIP_WIN
-    const xFor = (t: number) => (t - t0) * spd * PX_PER_MM
-    const yFor = (v: number) => centerY - v * MM_PER_MV * PX_PER_MM
+    const drew = scope.drawScope(ctx, w, h, speed)
 
-    EcgScope.drawPaperGrid(ctx, w, h, t0, xFor, centerY, spd)
-
-    ctx.strokeStyle = '#111'
-    ctx.lineWidth = 1.2
-    ctx.beginPath()
-    const iStart = Math.max(0, Math.floor((t0 - start_s) * fs))
-    const iEnd = Math.min(mv.length, Math.ceil((leadT - start_s) * fs))
-    let started = false
-    for (let i = iStart; i < iEnd; i++) {
-      const x = xFor(start_s + i / fs), y = yFor(mv[i])
-      if (!started) { ctx.moveTo(x, y); started = true } else { ctx.lineTo(x, y) }
+    if (drew < 2) {
+      const cx = w / 2, cy = h / 2
+      ctx.save()
+      ctx.textAlign = 'center'
+      ctx.fillStyle = '#444'
+      ctx.font = 'bold 16px sans-serif'
+      ctx.fillText('venter på syntetisk strøm', cx, cy + 4)
+      ctx.fillStyle = '#888'
+      ctx.font = '13px sans-serif'
+      ctx.fillText('krever minst én aktiv EKG-strøm - start økten fra TILKOBLING-fanen', cx, cy + 26)
+      ctx.textAlign = 'left'
+      ctx.restore()
+      return
     }
-    ctx.stroke()
 
-    const mvAt = (t: number) => mv[Math.round((t - start_s) * fs)] ?? 0
-    const peaks = (bundle.rpeaks_s ?? []).filter((rp: number) => rp >= t0 && rp <= leadT)
-    const flagged = new Set((bundle.flagged_ecg_s ?? []).map((x: number) => Math.round(x * 1000)))
-    for (const rp of peaks) {
-      const isBad = flagged.has(Math.round(rp * 1000))
-      ctx.fillStyle = isBad ? '#d98a00' : '#cb333b'
-      ctx.beginPath(); ctx.arc(xFor(rp), yFor(mvAt(rp)) - 8, 4, 0, Math.PI * 2); ctx.fill()
+    // «Washed out» mot høyre kant: estimatet er ferskest (og minst modent)
+    // lengst til høyre. Bredden styres av konfidensen - lav konfidens = bredere
+    // vask. Avtalt visualisering (Jørn 21.09).
+    const washFrac = Math.min(0.45, 0.08 + (1 - conf) * 0.3)
+    const x0 = w * (1 - washFrac)
+    const grad = ctx.createLinearGradient(x0, 0, w, 0)
+    grad.addColorStop(0, 'rgba(243,241,236,0)')
+    grad.addColorStop(1, `rgba(243,241,236,${0.55 + 0.35 * (1 - conf)})`)
+    ctx.fillStyle = grad
+    ctx.fillRect(x0, 0, w - x0, h)
+
+    if (scope.poorState || scope.nowT - scope.lastPeakT > 2) {
+      ctx.fillStyle = '#b06a00'
+      ctx.font = 'bold 13px sans-serif'
+      ctx.fillText('NO SIGNAL', w - 96, 22)
     }
   }
 
   function drawTacho() {
-    if (!tachoCanvas) return
+    if (!tachoCanvas || !bundle) return
     const f = fit(tachoCanvas)
     if (!f) return
     const [ctx, w, h] = f
-    const live = mode === 'live'
 
-    if (!live) {
-      drawTachoSample(ctx, w, h)
-      return
-    }
-
-    // LIVE: a clean textbook tachogram that scrolls right->left. The right edge
-    // is "now"; the window matches the strip so the RR trend lines up with it.
-    // Fixed y-axis - outliers clip off the plot. Two curves show whether the RR
-    // sources agree: native H10 beats (solid green, reliable) vs the shared
-    // in-browser ECG detector (dashed red).
     const t1 = bundle._axisRight
     const winS = w / PX_PER_MM / speed
     const t0 = t1 - winS
@@ -461,41 +386,7 @@
     }
     ctx.fillStyle = '#777'
     ctx.font = '11px sans-serif'
-    ctx.fillText(`RR (ms) - native H10 (green), ECG-derived (red dashed) - ${winS.toFixed(0)}s @ ${speed} mm/s`, 30, 14)
-  }
-
-  function drawTachoSample(ctx: CanvasRenderingContext2D, w: number, h: number) {
-    if (!bundle?.tachogram) return
-    const t1 = tMax()
-    const nat = bundle.tachogram.native
-    const ecg = bundle.tachogram.ecg_derived
-    let lo = 400, hi = 1400
-    for (const s of [nat, ecg]) {
-      if (s?.rr?.length) { lo = Math.min(lo, ...s.rr); hi = Math.max(hi, ...s.rr) }
-    }
-    const pad = (hi - lo) * 0.1 || 50
-    lo -= pad; hi += pad
-    const xFor = (t: number) => (t / t1) * w
-    const yFor = (rr: number) => h - ((rr - lo) / (hi - lo)) * h
-    ctx.fillStyle = 'rgba(60,120,200,0.10)'
-    ctx.fillRect(xFor(stripStart), 0, xFor(stripStart + STRIP_WIN) - xFor(stripStart), h)
-    if (ecg?.t?.length) {
-      ctx.strokeStyle = 'rgba(203,51,59,0.55)'; ctx.lineWidth = 1; ctx.beginPath()
-      ecg.t.forEach((t: number, i: number) => { const x = xFor(t), y = yFor(ecg.rr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) })
-      ctx.stroke()
-    }
-    if (nat?.t?.length) {
-      ctx.strokeStyle = '#0a9a4a'; ctx.lineWidth = 1.4; ctx.beginPath()
-      nat.t.forEach((t: number, i: number) => { const x = xFor(t), y = yFor(nat.rr[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) })
-      ctx.stroke()
-      nat.t.forEach((t: number, i: number) => {
-        const bad = nat.flagged?.[i]
-        ctx.fillStyle = bad ? '#d98a00' : '#0a9a4a'
-        ctx.beginPath(); ctx.arc(xFor(t), yFor(nat.rr[i]), bad ? 3.5 : 2, 0, Math.PI * 2); ctx.fill()
-      })
-    }
-    ctx.fillStyle = '#777'; ctx.font = '11px sans-serif'
-    ctx.fillText('RR (ms) - native (green), ECG-derived (red), flagged (amber)', 6, 14)
+    ctx.fillText(`RR (ms) - nativ H10 (grønn), EKG-derivert fra syntetisk (rød stiplet) - ${winS.toFixed(0)}s @ ${speed} mm/s`, 30, 14)
   }
 
   function drawRmssd() {
@@ -503,13 +394,10 @@
     const f = fit(rmssdCanvas)
     if (!f) return
     const [ctx, w, h] = f
-    const live = mode === 'live'
-    const t1 = live ? bundle._axisRight : tMax()
-    const t0 = live ? t1 - RMSSD_VIEW : 0
-    const leadT = live ? bundle._lead : t1
+    const t1 = bundle._axisRight
+    const t0 = t1 - RMSSD_VIEW
     const wins = bundle.windows.filter(
-      (x: any) => x.quality !== 'no_signal' && !isNaN(x.point) &&
-        (!live || (x.t_center_s >= t0 && x.t_center_s <= leadT)),
+      (x: any) => x.quality !== 'no_signal' && !isNaN(x.point) && x.t_center_s >= t0 && x.t_center_s <= t1,
     )
     const HI = RMSSD_HI
     const xFor = (t: number) => ((t - t0) / (t1 - t0)) * w
@@ -559,55 +447,28 @@
     }
     ctx.fillStyle = '#777'
     ctx.font = '11px sans-serif'
-    ctx.fillText(
-      live ? `RMSSD (ms) - last ${RMSSD_VIEW}s, fixed 0-${HI} - gray edge still forming`
-           : `RMSSD (ms) - point + uncertainty band, fixed 0-${HI}`,
-      6, 14,
-    )
-  }
-
-  function scrubFrom(ev: MouseEvent, canvas: HTMLCanvasElement) {
-    if (mode === 'live') return
-    const rect = canvas.getBoundingClientRect()
-    const frac = (ev.clientX - rect.left) / rect.width
-    const t = frac * tMax()
-    stripStart = Math.max(0, Math.min(t - STRIP_WIN / 2, Math.max(0, tMax() - STRIP_WIN)))
+    ctx.fillText(`RMSSD (ms) - siste ${RMSSD_VIEW}s, fast 0-${HI} - grå kant = under dannelse`, 6, 14)
   }
 
   function togglePause() {
     if (paused) { scope.requestAnchor(); paused = false }
     else paused = true
   }
-  function toLive() {
-    mode = 'live'
-  }
-  // Bytte av kilde (dual-H10 senere) skal gi et rent skop og RR-buffer.
-  $effect(() => {
-    void selected
-    resetLive()
-  })
-  function toSample() {
-    mode = 'sample'
-    if (!bundle || bundle._axisRight !== undefined) loadSample()
-  }
 
   onMount(() => {
     if (register) register(onFrame)
-    loadSample()
     let raf = 0
     const loop = () => {
       const perf = performance.now()
-      liveFresh = perf - lastHrMs < 2500 || perf - scope.lastEcgMs < 2500
+      hrSource = pickHrSource(perf)
+      liveFresh = perf - scope.lastEcgMs < 2500
       hrFresh = perf - lastHrMs < 3000
-      if (mode === 'live') {
-        // Follow the active stream (sessions start from the CONNECTION tab).
-        scope.tick(perf, liveFresh && !paused)
-        if (perf - lastWinMs > 350) {
-          liveWins = computeLiveWindows(rrTimes, rrVals, scope.ecgNewestT)
-          lastWinMs = perf
-        }
-        bundle = buildLiveBundle()
+      scope.tick(perf, liveFresh && !paused)
+      if (perf - lastWinMs > 350) {
+        liveWins = computeLiveWindows(rrTimes, rrVals, scope.ecgNewestT)
+        lastWinMs = perf
       }
+      bundle = buildBundle()
       drawStrip(); drawTacho(); drawRmssd()
       raf = requestAnimationFrame(loop)
     }
@@ -620,78 +481,63 @@
     const [lo, hi] = s.rmssd_band_ms ?? [null, null]
     return `${s.rmssd_point_ms} ms  (band ${lo}-${hi})`
   }
+  let sessNative: any = $state(null)
+  $effect(() => {
+    const iv = setInterval(() => {
+      sessNative = bundle?.session?.native ?? null
+    }, 500)
+    return () => clearInterval(iv)
+  })
 </script>
 
 <div class="hrv">
   <div class="topbar">
-    <span class="tag">EXPLORATORY - NOT DIAGNOSTIC</span>
-
-    <div class="modeswitch">
-      <button class:active={mode === 'sample'} onclick={toSample}>SAMPLE</button>
-      <button class:active={mode === 'live'} onclick={toLive}>LIVE</button>
-    </div>
-
-    {#if mode === 'live'}
-      <select bind:value={selected}>
-        {#each sourceIds as id}
-          <option value={id}>{friendlyLabel(id)}</option>
-        {/each}
-      </select>
-      <button class="pause" disabled={!running && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
-      <span class="speeds">
-        {#each SPEEDS as s}
-          <button class:active={speed === s} onclick={() => (speed = s)}>{s}</button>
-        {/each}
-        <span class="unit">mm/s</span>
-      </span>
-      <span class="metric beat">
-        <span class="heart" class:on={hrFresh}>&hearts;</span>
-        <b>{instHr ?? '--'}</b> bpm &middot; RR <b>{lastRr ?? '--'}</b> ms
-      </span>
-      <span class="metric live-state">
-        {#if running && !hrFresh}waiting for native RR (start an hrv session from CONNECTION){:else}{liveFresh ? 'streaming' : ((liveStatus?.state ?? 'idle') + ' - start from the CONNECTION tab')}{/if}
-      </span>
-    {/if}
-
-    {#if bundle?.session}
-      <span class="metric">RMSSD{mode === 'live' ? ' (30s)' : ''}: <b>{fmtBand(bundle.session.native)}</b></span>
-      <span class="metric">SDNN: <b>{bundle.session.native?.sdnn_ms ?? '-'}</b> ms</span>
-      <span class="metric">corrected: <b>{bundle.session.native?.pct_corrected ?? '-'}%</b></span>
-      {#if bundle.session.ecg_derived}
-        <span class="metric">ECG-derived RMSSD: <b>{fmtBand(bundle.session.ecg_derived)}</b></span>
+    <span class="tag">SYNTETISK ESTIMERT EKG - IKKE DIAGNOSTISK</span>
+    <span class="metric basis">
+      grunnlag: <b>{friendlyBasis(basis)}</b>
+      {#if liveFresh && basis === 'A+B'}
+        &middot; konfidens <b>{(conf * 100).toFixed(0)} %</b>
+        {#if residualMs != null && !isNaN(residualMs)}&middot; synk-residual <b>{residualMs.toFixed(1)} ms</b>{/if}
+        {#if driftPpm != null && !isNaN(driftPpm)}&middot; drift <b>{driftPpm.toFixed(0)} ppm</b>{/if}
       {/if}
+    </span>
+    <button class="pause" disabled={!liveFresh && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
+    <span class="speeds">
+      {#each SPEEDS as s (s)}
+        <button class:active={speed === s} onclick={() => (speed = s)}>{s}</button>
+      {/each}
+      <span class="unit">mm/s</span>
+    </span>
+    <span class="metric beat">
+      <span class="heart" class:on={hrFresh}>&hearts;</span>
+      <b>{instHr ?? '--'}</b> bpm &middot; RR <b>{lastRr ?? '--'}</b> ms
+      {#if hrSource}<span class="dim">(nativ RR: {hrSource.startsWith('esp32-') ? 'belte A' : 'belte B'})</span>{/if}
+    </span>
+    {#if sessNative}
+      <span class="metric">RMSSD (30s): <b>{fmtBand(sessNative)}</b></span>
+      <span class="metric">SDNN: <b>{sessNative?.sdnn_ms ?? '-'}</b> ms</span>
+      <span class="metric">korrigert: <b>{sessNative?.pct_corrected ?? '-'}%</b></span>
     {/if}
+    <span class="metric live-state">
+      {liveFresh ? 'live' : 'venter - start økt fra TILKOBLING-fanen'}
+    </span>
   </div>
 
-  {#if error && mode === 'sample'}
-    <div class="err">Could not load HRV bundle: {error}</div>
-  {:else if mode === 'sample' && !bundle}
-    <div class="err">Loading HRV bundle...</div>
-  {:else}
-    <div class="panel">
-      <div class="label">
-        RHYTHM STRIP - {mode === 'live' ? speed + ' mm/s' : '25 mm/s grid'}{#if paused} - PAUSED{/if}
-        {#if mode === 'live'}- red R-peak, amber ectopic{:else}- R-peaks red, flagged beats amber{/if}
-      </div>
-      <canvas bind:this={stripCanvas} class="c strip"></canvas>
-      {#if mode === 'sample'}
-        <input
-          type="range" min="0" max={Math.max(0, tMax() - STRIP_WIN)} step="0.2"
-          bind:value={stripStart} class="scrub" />
-        <div class="hint">t = {stripStart.toFixed(1)}-{(stripStart + STRIP_WIN).toFixed(1)} s of {tMax().toFixed(0)} s</div>
-      {/if}
+  <div class="panel">
+    <div class="label">
+      SYNTETISK STRIMMEL - {speed} mm/s - 10 mm/mV{#if paused} - PAUSED{/if}
+      - rød R-topp, oransje ektopisk - vasket høyrekant = estimat under dannelse
     </div>
-    <div class="panel">
-      <div class="label">TACHOGRAM - RR intervals{#if mode === 'live'} (native green vs ECG-derived red, scrolls with the strip){:else} (click to scrub the strip){/if}</div>
-      <canvas bind:this={tachoCanvas} class="c tacho"
-        onclick={(e) => scrubFrom(e, tachoCanvas)}></canvas>
-    </div>
-    <div class="panel">
-      <div class="label">ROLLING RMSSD - band widens where beats are uncertain; dashed line = SDNN{#if mode === 'sample'} (click to scrub){/if}</div>
-      <canvas bind:this={rmssdCanvas} class="c rmssd"
-        onclick={(e) => scrubFrom(e, rmssdCanvas)}></canvas>
-    </div>
-  {/if}
+    <canvas bind:this={stripCanvas} class="c strip"></canvas>
+  </div>
+  <div class="panel">
+    <div class="label">TACHOGRAM - RR-intervaller (nativ grønn vs EKG-derivert rød, ruller med strimmelen)</div>
+    <canvas bind:this={tachoCanvas} class="c tacho"></canvas>
+  </div>
+  <div class="panel">
+    <div class="label">RULLENDE RMSSD - båndet vider seg der slagene er usikre; stiplet linje = SDNN</div>
+    <canvas bind:this={rmssdCanvas} class="c rmssd"></canvas>
+  </div>
 </div>
 
 <style>
@@ -720,14 +566,7 @@
     padding: 3px 10px;
     border-radius: 6px;
   }
-  .modeswitch { display: flex; border: 1px solid var(--color-line, #ccc); border-radius: 6px; overflow: hidden; }
-  .modeswitch button {
-    border: 0; background: #fff; padding: 4px 12px; cursor: pointer;
-    font-family: var(--font-display, sans-serif); font-size: 12px; letter-spacing: 1px;
-    color: var(--color-slate, #555);
-  }
-  .modeswitch button.active { background: var(--color-ink, #111); color: #fff; }
-  select { padding: 4px 6px; border: 1px solid var(--color-line, #ccc); border-radius: 6px; }
+  .basis { font-size: 13px; }
   .live-state { text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
   .pause {
     border: 0; border-radius: 6px; padding: 5px 14px; cursor: pointer; color: #fff;
@@ -746,6 +585,7 @@
   .beat .heart.on { color: var(--color-heart, #cb333b); }
   .metric { color: var(--color-slate, #555); }
   .metric b { color: var(--color-ink, #111); }
+  .metric .dim { color: var(--color-slate, #999); font-size: 11px; }
   .panel { display: flex; flex-direction: column; gap: 4px; }
   .label {
     font-family: var(--font-display, sans-serif);
@@ -760,10 +600,6 @@
     border-radius: 8px;
   }
   .strip { height: 156px; }
-  .tacho { height: 150px; cursor: crosshair; }
-  .rmssd { height: 140px; cursor: crosshair; }
-  .scrub { width: 100%; }
-  .hint { font-size: 11px; color: var(--color-slate, #999); }
-  .err { padding: 20px; color: var(--color-slate, #777); }
+  .tacho { height: 150px; }
+  .rmssd { height: 140px; }
 </style>
-

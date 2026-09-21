@@ -223,7 +223,7 @@
             {:else if sp.warmup === 'active'}
               <p class="hint">Tilkoblet - H10 varmer opp (~5-35 s før første EKG).</p>
             {:else}
-              <p class="hint">Nyeste start vinner: en start her stopper andre kilder (H10 = én sentral).</p>
+              <p class="hint">Arbitrering per belte: kilder låst til hvert sitt belte (dual-H10) strømmer samtidig; ellers vinner nyeste start (H10 = én sentral).</p>
             {/if}
           {/each}
         </div>
@@ -260,7 +260,7 @@
 
         <div class="block">
           <h3>Bro / agent</h3>
-          {#if tm}
+          {#if tm && tm.uptime_s !== undefined}
             <table>
               <tbody>
                 <tr><td>WiFi-RSSI</td><td>{tm.wifi_rssi} dBm</td></tr>
@@ -271,8 +271,10 @@
                 <tr><td>Oppetid</td><td>{Math.floor(tm.uptime_s / 60)} min</td></tr>
               </tbody>
             </table>
+          {:else if tm}
+            <p class="dim">Raven-agent (USB-adapter) - sender belte-telemetri (hudkontakt/batteri), ingen bro-telemetri.</p>
           {:else}
-            <p class="dim">Ingen telemetri (raven-agenten sender ikke telemetri; ESP32-broen sender hvert 5. sekund).</p>
+            <p class="dim">Ingen telemetri mottatt ennå (kommer når en økt strømmer; ESP32-broen sender hvert 5. sekund).</p>
           {/if}
         </div>
       </div>
@@ -281,9 +283,10 @@
 
   <section class="card foot">
     <p>
-      Visningene <b>RAW ECG</b> og <b>RHYTHM/HRV</b> følger automatisk økten som
-      startes her. Bruk <b>hrv</b>-modus for å mate begge (EKG + ACC + nativ
-      HR/RR). H10 trenger ~5–35 s oppvarming før første EKG-ramme.
+      Visningene <b>RAW ECG</b>, <b>RAW ACC</b> og <b>SYNTETISK EKG</b> følger
+      automatisk øktene som startes her (to strimler ved dual-H10). Bruk
+      <b>hrv</b>-modus for å mate alle (EKG + ACC + nativ HR/RR). H10 trenger
+      ~5–35 s oppvarming før første EKG-ramme.
     </p>
   </section>
 </main>

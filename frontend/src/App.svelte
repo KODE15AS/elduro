@@ -3,14 +3,14 @@
   import ConnectionView from './lib/ConnectionView.svelte'
   import EcgView from './lib/EcgView.svelte'
   import AccView from './lib/AccView.svelte'
-  import HrvView from './lib/HrvView.svelte'
+  import SynthView from './lib/SynthView.svelte'
   import Landing from './lib/Landing.svelte'
   import type { EcgStreamMsg } from './lib/types'
 
   // Path-based routing. The app stays a single persistent-mounted SPA; the
   // route only selects which pane is visible, so live captures never tear down
-  // when navigating between tools. (HR Compare ble fjernet 20.09.2026 - den
-  // var et chat-1-verktoey for radiosammenligning og hadde utspilt rollen.
+  // when navigating between tools. (RHYTHM/HRV ble SYNTETISK EKG 21.09.2026 -
+  // fanen viser nå det fusjonerte dual-H10-estimatet; gammel path er alias.
   // All øktstyring bor på TILKOBLING-fanen fra 20.09.2026.)
   type View = 'home' | 'conn' | 'ecg' | 'acc' | 'hrv'
   const PATH_TO_VIEW: Record<string, View> = {
@@ -18,14 +18,15 @@
     '/tilkobling': 'conn',
     '/raw-ecg': 'ecg',
     '/raw-acc': 'acc',
-    '/rhythm-hrv': 'hrv',
+    '/syntetisk-ekg': 'hrv',
+    '/rhythm-hrv': 'hrv', // alias for gamle lenker/bokmerker
   }
   const VIEW_TO_PATH: Record<View, string> = {
     home: '/',
     conn: '/tilkobling',
     ecg: '/raw-ecg',
     acc: '/raw-acc',
-    hrv: '/rhythm-hrv',
+    hrv: '/syntetisk-ekg',
   }
   function viewFromPath(): View {
     return PATH_TO_VIEW[location.pathname] ?? 'home'
@@ -130,7 +131,7 @@
       RAW ACC
     </button>
     <button class:active={view === 'hrv'} onclick={() => go('hrv')}>
-      RHYTHM / HRV
+      SYNTETISK EKG
     </button>
   </div>
   <div class="controls">
@@ -168,13 +169,7 @@
   />
 </div>
 <div class="pane" style:display={view === 'hrv' ? 'contents' : 'none'}>
-  <HrvView
-    src="/sample-hrv.json"
-    sources={sources}
-    send={sendCmd}
-    register={registerEcg}
-    onstatus={ecgStatusFor}
-  />
+  <SynthView register={registerEcg} />
 </div>
 
 <style>

@@ -20,8 +20,8 @@
     },
     {
       view: 'hrv',
-      title: 'RHYTHM / HRV',
-      desc: 'Live rhythm strip, tachogram and RMSSD.',
+      title: 'SYNTETISK EKG',
+      desc: 'Fusjonert dual-H10-estimat, tachogram og rullende RMSSD.',
     },
   ]
 </script>

@@ -3,10 +3,12 @@
   import type { EcgStreamMsg } from './types'
   import { EcgScope } from './ecgScope'
 
-  // RAW ACC (20.09.2026): ACC-skopet flyttet ut av RAW ECG for å gjøre plass
-  // til to EKG-strimler (dual-H10). Bruker sin egen EcgScope-instans som
-  // inntar EKG-rammer KUN for klokkeanker (host<->elapsed-offset) og motor;
-  // selve EKG-kurven tegnes ikke her.
+  // RAW ACC (finpuss 21.09.2026): som RAW ECG - ingen kildevelger, viser
+  // automatisk strømmen(e) som kjører, stablet ved dual-H10. De tre aksene
+  // ligger oppå hverandre i ett komprimert panel per belte (~samme høyde som
+  // EKG-strimmelen). Hver kilde har sin egen EcgScope-instans som inntar
+  // EKG-rammer KUN for klokkeanker (host<->elapsed) og motor.
+
   interface Props {
     sources: Record<string, string>
     send: (cmd: object) => void
@@ -14,34 +16,60 @@
     onstatus: (source: string) => { state: string; detail: string; device: string } | null
   }
   let { sources, send, register, onstatus }: Props = $props()
+  void send
 
   const ACC_FS = 200
   const BUF_S = 60
   const SPEEDS = [25, 50]
+  const MAX_PANELS = 2
+  const accCap = ACC_FS * BUF_S
 
-  const scope = new EcgScope()
+  type LaneBuf = {
+    scope: EcgScope
+    x: Float32Array
+    y: Float32Array
+    z: Float32Array
+    t: Float64Array
+    head: number
+    filled: number
+    lastT: number
+    total: number
+    seenResetSeq: number
+  }
+  const lanes: Record<string, LaneBuf> = {}
+  function laneFor(src: string): LaneBuf {
+    return (lanes[src] ??= {
+      scope: new EcgScope(),
+      x: new Float32Array(accCap),
+      y: new Float32Array(accCap),
+      z: new Float32Array(accCap),
+      t: new Float64Array(accCap),
+      head: 0,
+      filled: 0,
+      lastT: -Infinity,
+      total: 0,
+      seenResetSeq: 0,
+    })
+  }
+  function resetLaneBuffers(l: LaneBuf) {
+    l.x = new Float32Array(accCap)
+    l.y = new Float32Array(accCap)
+    l.z = new Float32Array(accCap)
+    l.t = new Float64Array(accCap)
+    l.head = 0
+    l.filled = 0
+    l.lastT = -Infinity
+    l.total = 0
+  }
 
-  let selected = $state('')
-  let streamingSince = 0
   let paused = $state(false)
   let speed = $state(25)
-  let accTotal = $state(0)
-  let ecgFresh = $state(false)
-  let accCanvas: HTMLCanvasElement | undefined = $state()
+  let active: string[] = $state([])
+  let canvases: (HTMLCanvasElement | undefined)[] = $state([undefined, undefined])
+  let mirror: { total: number; fresh: boolean }[] = $state([])
 
-  const accCap = ACC_FS * BUF_S
-  let accX = new Float32Array(accCap)
-  let accY = new Float32Array(accCap)
-  let accZ = new Float32Array(accCap)
-  let accT = new Float64Array(accCap)
-  let accHead = 0
-  let accFilled = 0
-  let accLastT = -Infinity
-
-  const sourceIds = $derived(Object.keys(sources))
-  const status = $derived(selected ? onstatus(selected) : null)
-  const recording = $derived(ecgFresh)
-  const live = $derived(!!status && status.state === 'streaming')
+  const lastSeen: Record<string, number> = {}
+  const streamingSince: Record<string, number> = {}
 
   function friendlyLabel(id: string): string {
     if (id.startsWith('raven:hci0')) return 'Raven - onboard AX211 (weak)'
@@ -49,122 +77,125 @@
     if (id.startsWith('esp32-')) return 'ESP32 - Polar H10'
     return `native agent (${id.split(':')[0]})`
   }
-  function preferredSource(ids: string[]): string {
-    return ids.find((id) => !id.startsWith('raven:hci0')) ?? ids[0] ?? ''
+  function orderKey(id: string): string {
+    if (id.startsWith('esp32-')) return '0' + id
+    if (id === 'raven:hci1') return '1' + id
+    return '2' + id
   }
-
-  $effect(() => {
-    if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
-  })
-
-  let seenResetSeq = 0
+  function computeActive(perf: number): string[] {
+    const ids = Object.keys(sources).filter((id) => id !== 'synth')
+    const act = ids.filter((id) => {
+      const st = onstatus(id)
+      const fresh = perf - (lastSeen[id] ?? 0) < 3000
+      return fresh || st?.state === 'streaming'
+    })
+    act.sort((a, b) => orderKey(a).localeCompare(orderKey(b)))
+    return act.slice(0, MAX_PANELS)
+  }
 
   onMount(() => {
     register((m: EcgStreamMsg) => {
-      if (m.source !== selected) return
+      const src = (m as any).source as string
+      if (src === 'synth') return
+      const l = laneFor(src)
       if (m.t === 'ecg') {
-        // Kun klokkeanker + motor; kurven vises i RAW ECG-fanen.
-        scope.ingestEcg(m)
-        // Skopet nullstilte seg (ny økt) -> tøm KUN våre ACC-buffere (IKKE
-        // scope.reset, som ville bumpe resetSeq igjen -> uendelig løkke).
-        if (scope.resetSeq !== seenResetSeq) { seenResetSeq = scope.resetSeq; resetAccBuffers() }
+        // Kun klokkeanker + motor; EKG-kurven vises i RAW ECG-fanen.
+        l.scope.ingestEcg(m as any)
+        lastSeen[src] = performance.now()
+        if (l.scope.resetSeq !== l.seenResetSeq) {
+          l.seenResetSeq = l.scope.resetSeq
+          resetLaneBuffers(l)
+        }
       } else if (m.t === 'acc') {
-        const E = scope.elapsedOf(m)
-        if (Number.isNaN(scope.hostElapsedOffset)) return
-        const s = m.samples as number[][]
+        lastSeen[src] = performance.now()
+        const E = l.scope.elapsedOf(m as any)
+        if (Number.isNaN(l.scope.hostElapsedOffset)) return
+        const s = (m as any).samples as number[][]
         if (!s.length) return
         const base = E - (s.length - 1) / ACC_FS
         let shift = 0
-        if (accLastT > -Infinity) {
-          const overlap = accLastT + 1 / ACC_FS - base
+        if (l.lastT > -Infinity) {
+          const overlap = l.lastT + 1 / ACC_FS - base
           if (overlap > 0 && overlap < 0.5) shift = overlap
         }
         for (let i = 0; i < s.length; i++) {
-          accX[accHead] = s[i][0]
-          accY[accHead] = s[i][1]
-          accZ[accHead] = s[i][2]
-          accT[accHead] = base + i / ACC_FS + shift
-          accHead = (accHead + 1) % accCap
-          if (accFilled < accCap) accFilled++
+          l.x[l.head] = s[i][0]
+          l.y[l.head] = s[i][1]
+          l.z[l.head] = s[i][2]
+          l.t[l.head] = base + i / ACC_FS + shift
+          l.head = (l.head + 1) % accCap
+          if (l.filled < accCap) l.filled++
         }
-        accLastT = base + (s.length - 1) / ACC_FS + shift
-        accTotal = m.total
+        l.lastT = base + (s.length - 1) / ACC_FS + shift
+        l.total = (m as any).total
       }
     })
     let raf = 0
     const loop = () => {
       const perf = performance.now()
-      ecgFresh = perf - scope.lastEcgMs < 1500
-      if (live && !streamingSince) streamingSince = perf
-      if (!live) streamingSince = 0
-      scope.tick(perf, ecgFresh && !paused)
-      drawAcc()
+      const act = computeActive(perf)
+      if (act.join('|') !== active.join('|')) active = act
+      const mir: typeof mirror = []
+      act.forEach((src, i) => {
+        const l = laneFor(src)
+        const fresh = perf - l.scope.lastEcgMs < 1500
+        const st = onstatus(src)
+        const live = st?.state === 'streaming'
+        if (live && !streamingSince[src]) streamingSince[src] = perf
+        if (!live) streamingSince[src] = 0
+        l.scope.tick(perf, fresh && !paused)
+        mir.push({ total: l.total, fresh })
+        const canvas = canvases[i]
+        if (canvas) drawAcc(canvas, l, src, live, perf)
+      })
+      mirror = mir
       raf = requestAnimationFrame(loop)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   })
 
-  // Tømmer KUN ACC-ringbufferne (kalles ved skop-reset og kildebytte).
-  function resetAccBuffers() {
-    accX = new Float32Array(accCap)
-    accY = new Float32Array(accCap)
-    accZ = new Float32Array(accCap)
-    accT = new Float64Array(accCap)
-    accHead = 0
-    accFilled = 0
-    accLastT = -Infinity
-    accTotal = 0
-  }
-
-  // Bytte av kilde (dual-H10) gir et rent skop + tomme ACC-buffere.
-  $effect(() => {
-    void selected
-    scope.reset()
-    resetAccBuffers()
-  })
-
   function togglePause() {
-    if (paused) { scope.requestAnchor(); paused = false }
-    else paused = true
+    if (paused) {
+      for (const l of Object.values(lanes)) l.scope.requestAnchor()
+      paused = false
+    } else paused = true
   }
 
-  function drawAcc() {
-    if (!accCanvas) return
+  function drawAcc(canvas: HTMLCanvasElement, l: LaneBuf, src: string, live: boolean, perf: number) {
     const dpr = window.devicePixelRatio || 1
-    const w = accCanvas.clientWidth
-    const h = accCanvas.clientHeight
+    const w = canvas.clientWidth
+    const h = canvas.clientHeight
     if (!w || !h) return
-    if (accCanvas.width !== Math.round(w * dpr) || accCanvas.height !== Math.round(h * dpr)) {
-      accCanvas.width = Math.round(w * dpr)
-      accCanvas.height = Math.round(h * dpr)
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr)
+      canvas.height = Math.round(h * dpr)
     }
-    const ctx = accCanvas.getContext('2d')
+    const ctx = canvas.getContext('2d')
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
 
-    const mmPx = scope.PX_PER_MM
+    const mmPx = l.scope.PX_PER_MM
     const winS = w / mmPx / speed
-    const t1 = scope.nowInit ? scope.nowT : winS
+    const t1 = l.scope.nowInit ? l.scope.nowT : winS
     const t0 = t1 - winS
     const xFor = (t: number) => (t - t0) * speed * mmPx
     const collect = (v: Float32Array) => {
       const vs: number[] = [], ts: number[] = []
-      for (let i = 0; i < accFilled; i++) {
-        const idx = (accHead - accFilled + i + accCap * 2) % accCap
-        const tt = accT[idx]
+      for (let i = 0; i < l.filled; i++) {
+        const idx = (l.head - l.filled + i + accCap * 2) % accCap
+        const tt = l.t[idx]
         if (tt < t0 - 0.2 || tt > t1) continue
         ts.push(tt); vs.push(v[idx])
       }
       return { vs, ts }
     }
-    const gx = collect(accX), gy = collect(accY), gz = collect(accZ)
+    const gx = collect(l.x), gy = collect(l.y), gz = collect(l.z)
     if (gx.vs.length < 2) {
-      // Oppvarmings-/idle-overlay (H10 holder hele PMD-strømmen ~5-35 s).
       const cx = w / 2, cy = h / 2
-      const tsec = live && streamingSince ? (performance.now() - streamingSince) / 1000 : 0
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 350)
+      const tsec = live && streamingSince[src] ? (perf - streamingSince[src]) / 1000 : 0
+      const pulse = 0.5 + 0.5 * Math.sin(perf / 350)
       ctx.save()
       ctx.textAlign = 'center'
       if (live) {
@@ -172,12 +203,12 @@
         ctx.beginPath(); ctx.arc(cx, cy - 16, 8 + 4 * pulse, 0, Math.PI * 2); ctx.fill()
       }
       ctx.fillStyle = '#444'
-      ctx.font = 'bold 17px sans-serif'
-      ctx.fillText(live ? 'Polar H10 preparing signal...' : 'start the session from the CONNECTION tab', cx, cy + 16)
+      ctx.font = 'bold 15px sans-serif'
+      ctx.fillText(live ? 'Polar H10 preparing signal...' : 'venter på strøm', cx, cy + 14)
       if (live) {
         ctx.fillStyle = '#888'
-        ctx.font = '13px sans-serif'
-        ctx.fillText(`waiting for first ACC frame - ${tsec.toFixed(0)} s`, cx, cy + 38)
+        ctx.font = '12px sans-serif'
+        ctx.fillText(`waiting for first ACC frame - ${tsec.toFixed(0)} s`, cx, cy + 34)
       }
       ctx.textAlign = 'left'
       ctx.restore()
@@ -205,45 +236,51 @@
 
 <div class="acc">
   <div class="bar">
-    <label>
-      Source
-      <select bind:value={selected}>
-        {#if !sourceIds.length}
-          <option value="">no agent connected</option>
-        {/if}
-        {#each sourceIds as id (id)}
-          <option value={id}>{friendlyLabel(id)}</option>
-        {/each}
-      </select>
-    </label>
-    <button class="pause" disabled={!recording && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
+    <button class="pause" disabled={!active.length && !paused} onclick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
     <div class="speed">
       {#each SPEEDS as s (s)}
         <button class="sp" class:on={speed === s} onclick={() => (speed = s)}>{s}</button>
       {/each}
       <span class="unit">mm/s</span>
     </div>
-    <div class="stats">
-      {#if status}
-        <span class="state" class:err={status.state === 'error'}>
-          {status.state}{status.detail ? ' - ' + status.detail : ''}
-        </span>
-      {:else}
-        <span class="state">idle - start from the CONNECTION tab</span>
-      {/if}
-      <span title="Total ACC samples received this session">{accTotal.toLocaleString()} ACC samples</span>
-      <span title="Seconds of ACC recorded">{(accTotal / ACC_FS).toFixed(1)} s rec</span>
-    </div>
+    {#if !active.length}
+      <span class="state">ingen aktiv strøm - start økten fra TILKOBLING-fanen</span>
+    {/if}
   </div>
-  <div class="scope accscope">
-    <canvas bind:this={accCanvas}></canvas>
-    <div class="scale">
-      ACC - 200 Hz - milli-g -
-      <span style="color:#CB333B">X</span>
-      <span style="color:#40A15D">Y</span>
-      <span style="color:#778395">Z</span>
+
+  {#if active.length}
+    {#each active as src, i (src)}
+      {@const st = onstatus(src)}
+      {@const m = mirror[i]}
+      <div class="panelwrap">
+        <div class="striphead">
+          <b>{friendlyLabel(src)}</b>
+          {#if st?.device}<span class="dev">{st.device}</span>{/if}
+          <span class="stats">
+            <span class="state" class:err={st?.state === 'error'}>{st ? st.state + (st.detail ? ' - ' + st.detail : '') : ''}</span>
+            <span>{(m?.total ?? 0).toLocaleString()} samples</span>
+            <span>{((m?.total ?? 0) / ACC_FS).toFixed(1)} s</span>
+          </span>
+        </div>
+        <div class="scope accscope">
+          <canvas bind:this={canvases[i]}></canvas>
+          <div class="scale">
+            ACC - 200 Hz - milli-g -
+            <span style="color:#CB333B">X</span>
+            <span style="color:#40A15D">Y</span>
+            <span style="color:#778395">Z</span>
+          </div>
+        </div>
+      </div>
+    {/each}
+  {:else}
+    <div class="scope accscope idle">
+      <div class="idlemsg">
+        Ingen aktiv strøm. Start økten fra <b>TILKOBLING</b>-fanen - panelene
+        dukker opp her av seg selv (ett per belte ved dual-H10).
+      </div>
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>
@@ -254,20 +291,13 @@
     padding: 14px;
     box-sizing: border-box;
     gap: 12px;
+    overflow-y: auto;
   }
   .bar {
     display: flex;
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
-  }
-  .bar select {
-    margin-left: 6px;
-    font-family: var(--font-body);
-    padding: 4px 8px;
-    border: 1px solid var(--color-line);
-    border-radius: 6px;
-    background: var(--color-card);
   }
   button {
     font-family: var(--font-display);
@@ -310,19 +340,25 @@
     font-size: 12px;
     color: var(--color-slate);
   }
-  .stats {
+  .panelwrap { display: flex; flex-direction: column; gap: 6px; }
+  .striphead {
     display: flex;
-    gap: 16px;
+    align-items: baseline;
+    gap: 14px;
     font-size: 13.5px;
     color: var(--color-slate);
     flex-wrap: wrap;
   }
-  .stats .state {
-    text-transform: lowercase;
+  .striphead > b {
+    font-family: var(--font-display);
+    letter-spacing: 1px;
+    color: var(--color-ink, #222);
+    font-size: 13px;
   }
-  .stats .state.err {
-    color: var(--color-error);
-  }
+  .striphead .dev { font-size: 12px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; }
+  .state { text-transform: lowercase; }
+  .state.err { color: var(--color-error); }
   .scope {
     position: relative;
     background: var(--color-card);
@@ -331,8 +367,11 @@
     overflow: hidden;
   }
   .accscope {
-    flex: 1;
+    /* Komprimert: ~samme høyde som EKG-strimmelen (finpuss 21.09), stables. */
+    flex: 0 0 220px;
   }
+  .accscope.idle { display: flex; align-items: center; justify-content: center; }
+  .idlemsg { color: var(--color-slate); font-size: 14px; max-width: 480px; text-align: center; }
   canvas {
     position: absolute;
     inset: 0;
