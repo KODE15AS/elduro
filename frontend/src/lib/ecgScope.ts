@@ -88,8 +88,12 @@ export class EcgScope {
   gaps = 0
   deviceTimeS = 0
   lastEcgMs = 0
+  // Bumpes ved hver reset (ny økt). Visninger med egne buffere (RAW ACC, HRV)
+  // ser denne endre seg og nullstiller sine egne akkumulatorer i takt.
+  resetSeq = 0
 
   reset(): void {
+    this.resetSeq++
     this.ecgY = new Float32Array(this.ecgCap)
     this.ecgT = new Float64Array(this.ecgCap)
     this.ecgPoor = new Uint8Array(this.ecgCap)
@@ -186,6 +190,13 @@ export class EcgScope {
     const E = this.elapsedOf(m)
     const s = m.samples as number[]
     if (!s.length) return
+    // Ny økt: elapsed_ms nullstilles på START, så et tilbakehopp betyr fersk
+    // økt. Nullstill tidslinjen så strimmelen re-ankres (før: RECORD-knappen
+    // gjorde dette; nå styres økten fra TILKOBLING-fanen). Uten dette klemmes
+    // kurven i høyre kant fordi ecgTimeBase tvinger monoton tid fra forrige økt.
+    if (this.ecgLastT > -Infinity && E < this.ecgLastT - 3) {
+      this.reset()
+    }
     const base = this.ecgTimeBase(E, s.length)
     for (let j = 0; j < s.length; j++) this.commitEcgSample(s[j] / 1000, base + j / ECG_FS)
     this.ecgLastT = base + (s.length - 1) / ECG_FS

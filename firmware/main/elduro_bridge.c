@@ -74,8 +74,6 @@ static const char *TAG = "elduro";
 #define HRM_UUID16    0x2A37
 #define BATT_UUID16   0x2A19  // Battery Level (Battery Service 0x180F)
 #define FWREV_UUID16  0x2A26  // Firmware Revision String (DIS 0x180A)
-#define SERIAL_UUID16 0x2A25  // Serial Number String (DIS)
-#define SYSID_UUID16  0x2A23  // System ID (DIS)
 
 static const uint8_t ECG_START_CMD[] = {
     0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0e, 0x00,
@@ -137,6 +135,10 @@ static volatile bool g_contact_supported = false;
 static volatile bool g_contact = true;
 static int64_t s_offbody_since_us = 0;
 static esp_timer_handle_t s_offbody_timer;
+// Pauset pga. avtak: PMD (EKG/ACC) stoppet for å spare batteri, men BLE +
+// HR-abonnement beholdt så vi oppdager påsetting og gjenopptar automatisk.
+static volatile bool g_offbody_paused = false;
+static int64_t s_paused_since_us = 0;
 static volatile bool g_ble_ready = false;
 static volatile bool g_want_stream = false;
 static volatile bool g_streaming = false;
@@ -593,6 +595,7 @@ static void stop_measurements(void)
 {
     esp_timer_stop(s_start_retry_timer);
     esp_timer_stop(s_pmd_watchdog);
+    g_offbody_paused = false;
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     if (s_sd_session) {
         s_sd_session = false;
@@ -632,6 +635,7 @@ static void handle_command(const char *data, int len)
         else g_mode = MODE_ECG;
         ESP_LOGI(TAG, "cmd: start (mode=%d)", g_mode);
         g_want_stream = true;
+        g_offbody_paused = false;
         s_ble_fails = 0;
         s_unstable = 0;
         s_status_last[0] = '\0';  // fersk statusprogresjon for denne økten
@@ -929,56 +933,29 @@ static void ble_release(void)
     send_status("stopped", "user");
 }
 
-// DIS-lesing (fire-and-forget etter arming, forsinker ikke strømming): logger
-// serienummer + System ID til seriekonsollen (ANT+-undersøkelse) og lagrer
-// firmware-revisjonen for UI-et. Beltefirmware kan bare OPPDATERES via Polar
-// Flow; her leser vi den bare, som Polar Flow gjør.
-static int on_dis_sysid(uint16_t ch, const struct ble_gatt_error *err,
-                        struct ble_gatt_attr *attr, void *arg)
-{
-    if (err->status == 0 && attr && attr->om) {
-        uint8_t b[16] = {0};
-        uint16_t n = OS_MBUF_PKTLEN(attr->om);
-        if (n > sizeof(b)) n = sizeof(b);
-        ble_hs_mbuf_to_flat(attr->om, b, n, NULL);
-        char hex[40] = {0};
-        for (uint16_t i = 0; i < n && i < 16; i++) sprintf(hex + i * 2, "%02x", b[i]);
-        ESP_LOGI(TAG, ">> DIS System ID: %s (ANT+?)", hex);
-    }
-    return 0;
-}
-static int on_dis_serial(uint16_t ch, const struct ble_gatt_error *err,
-                         struct ble_gatt_attr *attr, void *arg)
-{
-    if (err->status == 0 && attr && attr->om) {
-        char s[32] = {0};
-        uint16_t n = OS_MBUF_PKTLEN(attr->om);
-        if (n > 31) n = 31;
-        ble_hs_mbuf_to_flat(attr->om, (uint8_t *)s, n, NULL);
-        ESP_LOGI(TAG, ">> DIS Serial: %s", s);
-    }
-    static const ble_uuid16_t sysid = BLE_UUID16_INIT(SYSID_UUID16);
-    ble_gattc_read_by_uuid(g_conn, 1, 0xffff, &sysid.u, on_dis_sysid, NULL);
-    return 0;
-}
+// DIS-lesing (fire-and-forget etter arming, forsinker ikke strømming): leser
+// firmware-revisjonen (0x2A26) for UI-et. «Read By Type» kan gi flere treff +
+// en avslutning, så callbacken kalles flere ganger - vi tar KUN første verdi
+// (g_fw_rev tømmes i read_dis, så tom = ikke satt ennå). Merk: DIS-strengen
+// kan avvike fra versjonen Polar Flow viser (komponent-/bootloader-versjon).
+// Beltefirmware kan bare OPPDATERES via Polar Flow, ikke fra vår side.
 static int on_dis_fwrev(uint16_t ch, const struct ble_gatt_error *err,
                         struct ble_gatt_attr *attr, void *arg)
 {
-    if (err->status == 0 && attr && attr->om) {
+    if (err->status == 0 && attr && attr->om && g_fw_rev[0] == '\0') {
         uint16_t n = OS_MBUF_PKTLEN(attr->om);
         if (n > sizeof(g_fw_rev) - 1) n = sizeof(g_fw_rev) - 1;
-        memset(g_fw_rev, 0, sizeof(g_fw_rev));
         ble_hs_mbuf_to_flat(attr->om, (uint8_t *)g_fw_rev, n, NULL);
+        g_fw_rev[n] = '\0';
         ESP_LOGI(TAG, ">> DIS Firmware: %s", g_fw_rev);
     }
-    static const ble_uuid16_t serial = BLE_UUID16_INIT(SERIAL_UUID16);
-    ble_gattc_read_by_uuid(g_conn, 1, 0xffff, &serial.u, on_dis_serial, NULL);
     return 0;
 }
 
 static void read_dis(void)
 {
     if (g_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    g_fw_rev[0] = '\0';  // tøm så vi fanger første treff for dette beltet
     static const ble_uuid16_t fw = BLE_UUID16_INIT(FWREV_UUID16);
     ble_gattc_read_by_uuid(g_conn, 1, 0xffff, &fw.u, on_dis_fwrev, NULL);
 }
@@ -1146,6 +1123,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_hr_val = 0;
         g_battery = -1;
+        g_fw_rev[0] = '\0';
+        g_offbody_paused = false;
         g_ble_ready = false;
         if (g_streaming) send_status("error", "H10 link lost");
         // Close the spill segment on link loss so it is flushed to the card;
@@ -1268,24 +1247,61 @@ static void temp_log_cb(void *arg)
 // Selvhelbredelse: kjøres hvert 5. s. Etter en 531-storm kan NimBLE havne i en
 // tilstand der skann-rutinen bailer og broen aldri kommer videre; da hjelper
 // bare en reboot (trygt nå: backend gjensender START ved re-registrering).
-// Auto-stopp ved avtak: beltet melder tapt hudkontakt (0x2A37). Stopper PMD
-// så beltet ikke drenerer (Polar Issue 2), godt innenfor 45 s BLE-timeout.
-// 20 s terskel så kortvarig dårlig kontakt under kjøring ikke stopper økten.
-#define OFFBODY_STOP_US (20 * 1000000ULL)
+// Pause ved avtak (i stedet for full stopp): beltet melder tapt hudkontakt
+// (0x2A37). Stopp PMD (EKG/ACC) så beltet ikke drenerer (Polar Issue 2), men
+// behold BLE + HR-abonnement så påsetting oppdages og økten GJENOPPTAS
+// automatisk - da slipper man å trykke START igjen. 20 s terskel så kortvarig
+// dårlig kontakt under kjøring ikke pauser (godt innenfor 45 s BLE-timeout).
+// Er beltet av lenge (5 min), gi opp helt og slipp beltet.
+#define OFFBODY_PAUSE_US   (20 * 1000000ULL)
+#define OFFBODY_GIVEUP_US  (5 * 60 * 1000000ULL)
+
+static void pause_offbody(void)
+{
+    // Stopp bare PMD (EKG/ACC); LA HR stå på for kontaktdeteksjon.
+    if (g_conn != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gattc_write_flat(g_conn, PMD_CP_VAL, ECG_STOP_CMD, sizeof(ECG_STOP_CMD), NULL, NULL);
+        ble_gattc_write_flat(g_conn, PMD_CP_VAL, ACC_STOP_CMD, sizeof(ACC_STOP_CMD), NULL, NULL);
+    }
+    if (s_sd_session) { s_sd_session = false; sd_marker("\x01CLOSE%s", ""); }
+    esp_timer_stop(s_pmd_watchdog);
+    g_streaming = false;
+    g_offbody_paused = true;
+    s_paused_since_us = esp_timer_get_time();
+    led_refresh();
+    s_status_last[0] = '\0';
+    send_status("paused", "beltet av - pauset, gjenopptar automatisk ved kontakt");
+    ESP_LOGW(TAG, ">> pauset (beltet av) - PMD stoppet, HR beholdt, venter paa kontakt");
+}
+
 static void offbody_check_cb(void *arg)
 {
-    if (!g_streaming || !g_want_stream) return;
+    if (!g_want_stream) return;
+    int64_t now = esp_timer_get_time();
+    // Gjenoppta: pauset og hudkontakt tilbake -> start PMD igjen.
+    if (g_offbody_paused) {
+        if (g_contact_supported && g_contact) {
+            g_offbody_paused = false;
+            ESP_LOGI(TAG, ">> hudkontakt tilbake - gjenopptar stroem");
+            s_status_last[0] = '\0';
+            start_measurements();
+        } else if (now - s_paused_since_us > OFFBODY_GIVEUP_US) {
+            // Av for lenge: gi opp økten helt og slipp beltet.
+            ESP_LOGW(TAG, ">> beltet av > 5 min - avslutter oekt og slipper beltet");
+            g_want_stream = false;
+            g_offbody_paused = false;
+            send_status("stopped", "beltet av >5 min - oekt avsluttet");
+            esp_timer_stop(s_release_timer);
+            esp_timer_start_once(s_release_timer, 400000);
+        }
+        return;
+    }
+    // Pause: strømmer, men mistet hudkontakt i > 20 s.
+    if (!g_streaming) return;
     if (!g_contact_supported || g_contact) return;
     if (s_offbody_since_us == 0) return;
-    if (esp_timer_get_time() - s_offbody_since_us < OFFBODY_STOP_US) return;
-    ESP_LOGW(TAG, ">> auto-stopp: beltet tatt av (ingen hudkontakt %ds) - stopper for aa spare batteri",
-             (int)(OFFBODY_STOP_US / 1000000ULL));
-    g_want_stream = false;
-    s_status_last[0] = '\0';
-    stop_measurements();
-    send_status("stopped", "beltet tatt av - stoppet automatisk (batterisparing)");
-    esp_timer_stop(s_release_timer);
-    esp_timer_start_once(s_release_timer, 400000);
+    if (now - s_offbody_since_us < OFFBODY_PAUSE_US) return;
+    pause_offbody();
 }
 
 static int s_wedge_kicks = 0;

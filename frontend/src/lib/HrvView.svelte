@@ -112,11 +112,18 @@
     }
   }
 
+  let seenResetSeq = 0
+
   function onFrame(m: any) {
     if (mode !== 'live' || m.source !== selected) return
     if (m.t === 'ecg') {
       // Same engine as RAW ECG: baseline removal + sticky detection happen inside.
       scope.ingestEcg(m)
+      // Skopet nullstilte seg (ny økt) -> nullstill RR-akkumulatorene også.
+      if (scope.resetSeq !== seenResetSeq) {
+        seenResetSeq = scope.resetSeq
+        rrVals = []; rrTimes = []; liveWins = []; lastRr = null; instHr = null
+      }
     } else if (m.t === 'hr') {
       lastHrMs = performance.now()
       const rr = (m.rr as number[]) ?? []

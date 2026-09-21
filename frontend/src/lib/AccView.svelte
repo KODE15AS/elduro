@@ -57,12 +57,16 @@
     if (!selected && sourceIds.length) selected = preferredSource(sourceIds)
   })
 
+  let seenResetSeq = 0
+
   onMount(() => {
     register((m: EcgStreamMsg) => {
       if (m.source !== selected) return
       if (m.t === 'ecg') {
         // Kun klokkeanker + motor; kurven vises i RAW ECG-fanen.
         scope.ingestEcg(m)
+        // Skopet nullstilte seg (ny økt) -> nullstill våre ACC-buffere også.
+        if (scope.resetSeq !== seenResetSeq) { seenResetSeq = scope.resetSeq; resetBuffers() }
       } else if (m.t === 'acc') {
         const E = scope.elapsedOf(m)
         if (Number.isNaN(scope.hostElapsedOffset)) return
