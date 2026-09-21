@@ -207,7 +207,25 @@ OPPDATERES via Polar Flow, ikke fra vår side.
 TILKOBLING-fanen mistet RAW ECG/HRV skop-nullstillingen som RECORD-knappen
 gjorde. EKG-strimmelen klemte seg i høyre kant ved øktrestart. Fikset: skopet
 selvnullstiller ved elapsed-tilbakehopp (ny økt), og en `resetSeq`-teller lar
-RAW ACC/HRV nullstille sine egne buffere i takt.
+RAW ACC/HRV nullstille sine egne buffere i takt. (RAW ACC hadde en uendelig
+reset-løkke i første forsøk – `resetBuffers` kalte `scope.reset()` som bumpet
+`resetSeq` som trigget `resetBuffers` – fikset ved å skille ACC-buffer-
+nullstilling fra skop-reset.)
+
+Verifisert 21.09 (Belte A, firmware DIS 5.0.0 / app 3.3.1, batteri helt ned mot
+10 % stabilt): tilkoblingssekvens og RAW ECG «perfekt», RAW ACC bra etter fiks,
+auto-pause + hudkontakt-bit pålitelig. EKG-strimmelens y-skala ser mindre ut
+etter høydeendring 156→220 px (fast klinisk mm/mV, mer luft) – kosmetisk,
+finjusteres ved behov.
+
+**ÅPEN kant (bevisst neste-oppgave, ikke hot-patch nå):** ved FULL avtak faller
+BLE, og auto-rekoblingen kan sette seg fast i skanning i ~1 min før den finner
+beltet igjen; **STOPP+START gjenoppretter på ~2 s**. Kort løsning med beltet
+nær gjenopptar sømløst. Forbedring å vurdere: senk supervisor-ens
+restart-terskel etter pause, eller slipp beltet raskere ved BLE-fall under
+pause. Også vurder: umiddelbar telemetri/status ved kontaktendring (nå henger
+«Hudkontakt»-visningen opptil 5 s pga. telemetri-kadensen; selve pause-timingen
+er nøyaktig på 1 Hz HR-rammer).
 
 **Belte-problem 20.09 kveld – OMTOLKET 21.09 etter Polar KnownIssues-funn:**
 H10 droppet EKG+ACC ~20–30 s inn (`reason=531`) og leste 18 % selv med fersk
