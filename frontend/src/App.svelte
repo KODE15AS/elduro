@@ -151,6 +151,7 @@
 <div class="pane" style:display={view === 'conn' ? 'contents' : 'none'}>
   <ConnectionView
     sources={sources}
+    belts={belts}
     send={sendCmd}
     register={registerEcg}
     onstatus={ecgStatusFor}

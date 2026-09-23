@@ -17,8 +17,10 @@
   }
   let { sources, belts = {}, register, onstatus }: Props = $props()
 
+  // Enhetsnavn per kilde: status (benkeagent) OG telemetri (ESP32).
+  let deviceSeen: Record<string, string> = $state({})
   function beltOf(src: string): string {
-    const dev = onstatus(src)?.device ?? ''
+    const dev = deviceSeen[src] || onstatus(src)?.device || ''
     for (const [id, letter] of Object.entries(belts)) {
       if (dev.includes(id)) return letter
     }
@@ -110,6 +112,11 @@
     register((m: EcgStreamMsg) => {
       const src = (m as any).source as string
       if (src === 'synth') return
+      if ((m as any).t === 'telemetry') {
+        const dev = (m as any).device
+        if (dev && deviceSeen[src] !== dev) deviceSeen[src] = dev
+        return
+      }
       const l = laneFor(src)
       if (m.t === 'ecg') {
         // Kun klokkeanker + motor; EKG-kurven vises i RAW ECG-fanen.
@@ -271,7 +278,7 @@
             <span class="belt" title={PLACEMENT[beltOf(src)] ?? ''}>BELTE {beltOf(src)}</span>
           {/if}
           <b>{friendlyLabel(src)}</b>
-          {#if st?.device}<span class="dev">{st.device}</span>{/if}
+          {#if deviceSeen[src] || st?.device}<span class="dev">{deviceSeen[src] || st?.device}</span>{/if}
           <span class="stats">
             <span class="state" class:err={st?.state === 'error'}>{st ? st.state + (st.detail ? ' - ' + st.detail : '') : ''}</span>
             <span>{(m?.total ?? 0).toLocaleString()} samples</span>

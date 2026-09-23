@@ -6,13 +6,37 @@
   type Status = { state: string; detail: string; device: string } | null
   interface Props {
     sources: Record<string, string>
+    belts?: Record<string, string>
     send: (cmd: object) => void
     register: (fn: (m: any) => void) => void
     onstatus: (source: string) => Status
   }
-  let { sources, send, register, onstatus }: Props = $props()
+  let { sources, belts = {}, send, register, onstatus }: Props = $props()
 
-  const sourceIds = $derived(Object.keys(sources))
+  // Konsistent rekkefølge med RAW-fanene: belte A øverst, så B, C...;
+  // kilder uten kjent belte etter transport (ESP32 først).
+  function beltOf(id: string): string {
+    void tick
+    const dev = telemetry[id]?.device || onstatus(id)?.device || ''
+    for (const [beltId, letter] of Object.entries(belts)) {
+      if (dev.includes(beltId)) return letter
+    }
+    return ''
+  }
+  function orderKey(id: string): string {
+    const b = beltOf(id)
+    if (b) return '0' + b
+    if (id.startsWith('esp32-')) return '1' + id
+    if (id === 'raven:hci1') return '2' + id
+    return '3' + id
+  }
+  const sourceIds = $derived(
+    Object.keys(sources).sort((a, b) => orderKey(a).localeCompare(orderKey(b))),
+  )
+  const PLACEMENT: Record<string, string> = {
+    A: 'øvre belte - senter ~5 cm under høyre brystvorte',
+    B: 'nedre belte, rotert - senter ~8 cm under venstre brystvorte',
+  }
 
   // Per kilde/strøm: rullerende 5 s-vindu for ratemåling.
   type StreamStat = { win: { t: number; n: number }[]; lastMs: number; total: number; seq: number }
@@ -187,6 +211,9 @@
     {@const tm = tele(id)}
     <section class="card">
       <header>
+        {#if beltOf(id)}
+          <span class="belt" title={PLACEMENT[beltOf(id)] ?? ''}>BELTE {beltOf(id)}</span>
+        {/if}
         <h2>{friendlyLabel(id)}</h2>
         <code>{id}</code>
       </header>
@@ -336,6 +363,16 @@
     margin: 0 0 8px;
   }
   code { font-size: 12px; color: var(--color-slate); }
+  .belt {
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: #fff;
+    background: var(--color-slate, #555);
+    padding: 2px 8px;
+    border-radius: 5px;
+    cursor: help;
+  }
   .grid {
     display: grid;
     /* auto-fill + romslig minimum: blokker bryter til ny rad i stedet for å

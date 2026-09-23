@@ -17,10 +17,14 @@
   }
   let { sources, belts = {}, register, onstatus }: Props = $props()
 
+  // Enhetsnavn per kilde: status-meldinger (benkeagent) OG telemetri (ESP32 -
+  // broens status bærer ikke device, kun telemetrien hvert 5. s).
+  let deviceSeen: Record<string, string> = $state({})
+
   // Hvilket belte strømmer kilden nå? Matcher enhetsnavnet ("Polar H10
   // 0B052A39") mot belteregisteret. '' = ukjent.
   function beltOf(src: string): string {
-    const dev = onstatus(src)?.device ?? ''
+    const dev = deviceSeen[src] || onstatus(src)?.device || ''
     for (const [id, letter] of Object.entries(belts)) {
       if (dev.includes(id)) return letter
     }
@@ -81,8 +85,14 @@
 
   onMount(() => {
     register((m: EcgStreamMsg) => {
-      if (m.t !== 'ecg' || (m as any).source === 'synth') return
       const src = (m as any).source as string
+      if (src === 'synth') return
+      if ((m as any).t === 'telemetry') {
+        const dev = (m as any).device
+        if (dev && deviceSeen[src] !== dev) deviceSeen[src] = dev
+        return
+      }
+      if (m.t !== 'ecg') return
       scopeFor(src).ingestEcg(m as any)
       lastSeen[src] = performance.now()
     })
@@ -201,7 +211,7 @@
             <span class="belt" title={PLACEMENT[beltOf(src)] ?? ''}>BELTE {beltOf(src)}</span>
           {/if}
           <b>{friendlyLabel(src)}</b>
-          {#if st?.device}<span class="dev">{st.device}</span>{/if}
+          {#if deviceSeen[src] || st?.device}<span class="dev">{deviceSeen[src] || st?.device}</span>{/if}
           <span class="bpm">&hearts; <b>{m?.bpm ?? '--'}</b> bpm</span>
           <span class="stats">
             <span class="state" class:err={st?.state === 'error'}>{st ? st.state + (st.detail ? ' - ' + st.detail : '') : ''}</span>
