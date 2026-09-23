@@ -10,12 +10,26 @@
 
   interface Props {
     sources: Record<string, string>
-    send: (cmd: object) => void
+    // Belteregister: belte-id (f.eks. "0B052A39") -> bokstav ("A"/"B"/...).
+    belts?: Record<string, string>
     register: (fn: (m: EcgStreamMsg) => void) => void
     onstatus: (source: string) => { state: string; detail: string; device: string } | null
   }
-  let { sources, send, register, onstatus }: Props = $props()
-  void send // øktstyring skjer på TILKOBLING-fanen
+  let { sources, belts = {}, register, onstatus }: Props = $props()
+
+  // Hvilket belte strømmer kilden nå? Matcher enhetsnavnet ("Polar H10
+  // 0B052A39") mot belteregisteret. '' = ukjent.
+  function beltOf(src: string): string {
+    const dev = onstatus(src)?.device ?? ''
+    for (const [id, letter] of Object.entries(belts)) {
+      if (dev.includes(id)) return letter
+    }
+    return ''
+  }
+  const PLACEMENT: Record<string, string> = {
+    A: 'øvre belte - senter ~5 cm under høyre brystvorte',
+    B: 'nedre belte, rotert - senter ~8 cm under venstre brystvorte',
+  }
 
   const ECG_FS = 130
   const SPEEDS = [25, 50] // mm/s selectable
@@ -43,11 +57,15 @@
     if (id.startsWith('esp32-')) return 'ESP32 - Polar H10'
     return `native agent (${id.split(':')[0]})`
   }
-  // Fast rekkefølge: belte A (ESP32) øverst, deretter BT-600, så andre.
+  // Fast rekkefølge: belte A øverst, så B, C... (fra belteregisteret,
+  // uansett transportvei). Kilder uten kjent belte sorteres etter transport
+  // (ESP32 først) bakerst.
   function orderKey(id: string): string {
-    if (id.startsWith('esp32-')) return '0' + id
-    if (id === 'raven:hci1') return '1' + id
-    return '2' + id
+    const b = beltOf(id)
+    if (b) return '0' + b
+    if (id.startsWith('esp32-')) return '1' + id
+    if (id === 'raven:hci1') return '2' + id
+    return '3' + id
   }
 
   function computeActive(perf: number): string[] {
@@ -179,6 +197,9 @@
       {@const m = mirror[i]}
       <div class="strip">
         <div class="striphead">
+          {#if beltOf(src)}
+            <span class="belt" title={PLACEMENT[beltOf(src)] ?? ''}>BELTE {beltOf(src)}</span>
+          {/if}
           <b>{friendlyLabel(src)}</b>
           {#if st?.device}<span class="dev">{st.device}</span>{/if}
           <span class="bpm">&hearts; <b>{m?.bpm ?? '--'}</b> bpm</span>
@@ -284,6 +305,16 @@
     letter-spacing: 1px;
     color: var(--color-ink, #222);
     font-size: 13px;
+  }
+  .belt {
+    font-family: var(--font-display);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: #fff;
+    background: var(--color-slate, #555);
+    padding: 2px 8px;
+    border-radius: 5px;
+    cursor: help;
   }
   .striphead .dev { font-size: 12px; }
   .stats { display: flex; gap: 14px; flex-wrap: wrap; }

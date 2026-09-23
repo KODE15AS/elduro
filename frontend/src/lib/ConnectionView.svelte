@@ -284,9 +284,17 @@
   <section class="card foot">
     <p>
       Visningene <b>RAW ECG</b>, <b>RAW ACC</b> og <b>SYNTETISK EKG</b> følger
-      automatisk øktene som startes her (to strimler ved dual-H10). Bruk
-      <b>hrv</b>-modus for å mate alle (EKG + ACC + nativ HR/RR). H10 trenger
-      ~5–35 s oppvarming før første EKG-ramme.
+      automatisk øktene som startes her (to strimler ved dual-H10, belte A
+      alltid øverst). Bruk <b>hrv</b>-modus for å mate alle (EKG + ACC + nativ
+      HR/RR). H10 trenger ~5–35 s oppvarming før første EKG-ramme.
+    </p>
+    <p>
+      <b>Beltepark og plassering:</b> Belte A = 0B052A39, <i>øvre belte, senter
+      ~5 cm under høyre brystvorte</i>. Belte B = 1DA2053E, <i>nedre belte,
+      rotert, senter ~8 cm under venstre brystvorte</i>.
+      <b>Oppstart fra scratch: start belte B (BT-600) først, deretter
+      ESP32</b> - broen mangler foreløpig beltefilter i firmware og tar første
+      belte den ser.
     </p>
   </section>
 </main>

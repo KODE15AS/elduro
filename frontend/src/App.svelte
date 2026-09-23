@@ -38,6 +38,8 @@
   }
 
   let sources: Record<string, string> = $state({})
+  // Belteregister fra backend (ELDURO_BELTS): belte-id -> bokstav (A/B/C...).
+  let belts: Record<string, string> = $state({})
   let wsUp = $state(false)
   let view: View = $state(viewFromPath())
 
@@ -95,6 +97,8 @@
       const next: Record<string, string> = {}
       for (const s of m.sources) next[s.id] = s.label
       sources = next
+    } else if (m.t === 'belts') {
+      belts = m.belts ?? {}
     } else if (m.t === 'status') {
       ecgStatus[m.source] = {
         state: m.state ?? '',
@@ -155,7 +159,7 @@
 <div class="pane" style:display={view === 'ecg' ? 'contents' : 'none'}>
   <EcgView
     sources={sources}
-    send={sendCmd}
+    belts={belts}
     register={registerEcg}
     onstatus={ecgStatusFor}
   />
@@ -163,7 +167,7 @@
 <div class="pane" style:display={view === 'acc' ? 'contents' : 'none'}>
   <AccView
     sources={sources}
-    send={sendCmd}
+    belts={belts}
     register={registerEcg}
     onstatus={ecgStatusFor}
   />

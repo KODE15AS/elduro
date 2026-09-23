@@ -24,6 +24,9 @@ services:
       # Beltelåsing for dual-H10 (per-enhet-arbitrering, 21.09.2026):
       # "kildemønster=belte-id", kommaseparert; '*' på slutten = prefiks-match.
       ELDURO_DEVICE_PINS: ${ELDURO_DEVICE_PINS:-}
+      # Belteregister (23.09.2026): "bokstav=belte-id" - UI merker/sorterer
+      # strimlene som BELTE A/B/C uansett transportvei.
+      ELDURO_BELTS: ${ELDURO_BELTS:-}
     networks:
       - default
       # Delt MariaDB-stack (kanonisk arkiv) - se unntak nr. 2 i AGENTS.md.

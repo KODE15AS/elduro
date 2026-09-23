@@ -53,6 +53,28 @@ struct AppState {
     // kringkaster fusjonerte rammer som source "synth". Kun visningslag -
     // arkiveres IKKE (beslutning 21.09: avledede lag genereres).
     synth: Mutex<synth::SynthCore>,
+    // Belteregister (Jørn 23.09): ELDURO_BELTS="A=0B052A39,B=1DA2053E[,C=...]".
+    // Bokstav -> belte-id. Kringkastes til UI-et ved tilkobling, slik at
+    // strimlene kan merkes/sorteres som BELTE A/B uansett transportvei.
+    // Regel: belte A = øvre belte, senter ~5 cm under høyre brystvorte;
+    // belte B = nedre, rotert, ~8 cm under venstre brystvorte.
+    belts: Vec<(String, String)>,
+}
+
+fn parse_belts() -> Vec<(String, String)> {
+    std::env::var("ELDURO_BELTS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .filter_map(|e| {
+                    let (k, v) = e.split_once('=')?;
+                    let (k, v) = (k.trim(), v.trim());
+                    (!k.is_empty() && !v.is_empty())
+                        .then(|| (k.to_string(), v.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_pins() -> Vec<(String, String)> {
@@ -119,6 +141,7 @@ async fn main() {
         wanted: Mutex::new(HashMap::new()),
         pins: parse_pins(),
         synth: Mutex::new(synth::SynthCore::new()),
+        belts: parse_belts(),
     });
     if !state.pins.is_empty() {
         println!("device pins: {:?}", state.pins);
@@ -172,6 +195,18 @@ async fn handle_ui(socket: WebSocket, state: Arc<AppState>) {
     let snapshot = state.sources_json().await;
     if tx.send(Message::Text(snapshot.into())).await.is_err() {
         return;
+    }
+    // Belteregisteret er statisk per prosess: send én gang ved UI-tilkobling.
+    if !state.belts.is_empty() {
+        let belts: serde_json::Map<String, serde_json::Value> = state
+            .belts
+            .iter()
+            .map(|(letter, id)| (id.clone(), serde_json::Value::String(letter.clone())))
+            .collect();
+        let msg = serde_json::json!({ "t": "belts", "belts": belts }).to_string();
+        if tx.send(Message::Text(msg.into())).await.is_err() {
+            return;
+        }
     }
 
     let mut bcast = state.ui_tx.subscribe();
