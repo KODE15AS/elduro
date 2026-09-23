@@ -25,70 +25,41 @@ for status/backlog. Punktene krysses av etter hvert som de leveres.
   store-and-forward (etappe 1), MariaDB-arkiv i drift, SNTP-veggklokke,
   auto-håndtering av avtak (hudkontakt-bit), backend-auto-gjenopptak,
   selvhelbredende BLE, samlet TILKOBLING-fane, RAW ACC-fane, HR Compare fjernet.
-  **Full detalj, beslutninger, driftsregler og chat-5-backlog i det komplette
-  dokumentet [2026-09-21-chat-4-til-5.md](./2026-09-21-chat-4-til-5.md) – start
-  der for chat 5.**
+  Detaljer i [2026-09-21-chat-4-til-5.md](./2026-09-21-chat-4-til-5.md).
+- [x] **Chat 5 – dual-H10 benk + syntetisk EKG v1 + UI-finpuss (23.09.2026):**
+  begge belter samtidig (arbitrering per belte, beltefilter i agent),
+  syntesemotor i backend (R-topp-klokkefit + fusjon, replay-validert:
+  100 % match, ~3,2 ms residual), SYNTETISK EKG-fane, RAW-faner uten
+  kildevelger med stablet A-øverst, belteregister (ELDURO_BELTS),
+  hudkontakt-telemetri fra benkeagenten. **Full detalj, driftsregler og
+  chat-6-backlog i det komplette dokumentet
+  [2026-09-23-chat-5-til-6.md](./2026-09-23-chat-5-til-6.md) – start der for
+  chat 6.**
 
 ## Gjenstående (prioritert backlog – detaljer i 4→5-dokumentet)
 
-Rekkefølge justert 21.09.2026 (chat 5): SD-opplasting venter på maskinvare, så
-UI-finpuss og dual-H10-benkarbeid går først.
+Prioritert 23.09.2026 (chat 5→6); full detalj i
+[2026-09-23-chat-5-til-6.md](./2026-09-23-chat-5-til-6.md) §3.
 
-- [x] **UI-finpuss elduro.no (LEVERT 21.09 natt, Jørns finpuss-dokument):**
-  RAW ECG/ACC uten kildevelger - viser automatisk aktive strømmer, to stablede
-  strimler/paneler ved dual (A øverst, fast). ACC komprimert til
-  EKG-strimmelhøyde. RHYTHM/HRV omdøpt til **SYNTETISK EKG** (path
-  `/syntetisk-ekg`, gammel path er alias); all tilkoblingsinfo kun på
-  TILKOBLING. Gjenstår fra gammel liste: EKG y-skala-finjustering.
-- [x] **Dual-H10 benkstart + syntetisk EKG v1 (LEVERT 21.09):** begge belter
-  strømmer samtidig til arkivet (A på ESP32, B på BT-600 med `--device`-lås;
-  `ELDURO_DEVICE_PINS` i `.env`). **Syntesemotor i backend**
-  (`backend/src/synth.rs`): R-topp-forankret klokke-fit (offset+drift) +
-  polaritetsjustert fusjon, kringkastes som kilde `synth` (genereres kun,
-  arkiveres ikke). Replay-validert mot kveldens dual-data
-  (`--bin synth_replay`): 100 % R-topp-match, ~3,2 ms residual,
-  lead-korrelasjon +0,85-0,94. Visning med grunnlag/konfidens og «washed
-  out» høyrekant.
-- [ ] **Dual-H10 neste trinn:** konsensus-basert HRV/RMSSD (slag begge belter
-  ser, ACC/SQI-vekting), plan vektorsløyfe (2D-VCG), metode 2/3-fusjon,
-  validering mot 12-avlednings-referansen (`docs/private/`, gitignorert).
-  Lærdommer fra benkstarten: (1) drept sentral gir foreldreløs PMD-strøm i
-  beltet → agenten fikk stopp-før-start; (2) belte-reset (knappcelle) sletter
-  beltets bindingsnøkler → slett BlueZ-bindingen og par på nytt manuelt
-  (`bluetoothctl pair` – btleplug har ingen paringsagent); (3) PMD-kontroll
-  krever kryptert link, feiler som «Not paired»/«Not connected» uten bond.
-- [ ] **ESP32-firmware: beltefilter** (sett 23.09: broen grep belte B ved
-  scratch-oppstart). Skal kun godta belte A (0B052A39), konfigurerbart.
-  Krever flash over USB. Workaround til da: start B (BT-600) før A (ESP32);
-  dokumentert på TILKOBLING-fanen. Belteregister i UI levert 23.09
-  (`ELDURO_BELTS`: BELTE A/B-merking, A alltid øverst).
-- [ ] **frames.device_id = belte-ID, ikke kilde:** ingest bruker i dag source
-  som device_id (rammene på wire mangler belte-id). Må fikses før
-  SD-opplastingens dedup (samme belte via to stier skal dedupe på belte).
-- [ ] **Småfunn 21.09:** UI-hjelpeteksten «Nyeste start vinner …» er utdatert
-  etter per-enhet-arbitrering (tas i UI-finpussen); én UI-WS-melding observert
-  med ugyldig kontrolltegn i JSON (ettergås).
-- [ ] **SD-spill-opplasting + dedup/merge i backend** (når nytt Sense-kort er
-  her; `INSERT IGNORE` på dedup-nøkkelen).
-- [ ] **v1-migrering** av `recordings/*.jsonl` (3,9 GB) inn i MariaDB.
-- [ ] **Robusthets-finpuss:** full avtak → BLE faller → auto-rekobling kan
-  henge ~1 min (STOPP+START gjenoppretter på ~2 s); tydeligere pause-visning.
-- [ ] **Raskere hudkontakt-visning:** benkeagenten LEVERT 21.09 (telemetri
-  umiddelbart ved kontaktendring); ESP32-firmware gjenstår (5 s-kadens).
-  Auto-pause ved avtak mangler også i benkeagenten (paritet med firmware).
-- [ ] **EKG-strimmelens y-skala** finjusteres (ser mindre ut etter
-  høydeendring).
-- [ ] **PSRAM-ringbuffer** mellom BLE-inntak og WiFi/SD-skriverne.
-- [ ] **Dual-H10 felt** (to belter på én ESP32-bro): venter på nytt Sense-kort;
-  benkarbeidet over går først.
-- [ ] **Batteri/kapsling/effektbudsjett** (Grove Base krever lodding; 1S 1000
-  mAh LiPo; 31+ min økt).
-- [ ] **Hendelsesmarkør:** ACC-tapp som MVP; eventuelt ESP32-knapp.
-- [ ] **Kubios-validering** av RMSSD-tallene (engangs, benk-opptak).
-- [ ] **Ingress-migrering Caddy → Traefik** (Jørns beslutning 28.08.2026, se
-  [2026-08-06-chat-3-til-4.md](./2026-08-06-chat-3-til-4.md) §8). Koordineres
-  med Klasserommet stage-4.
-- [ ] **Nytt Sense-kort** (113991115) monteres når det kommer → SD-spill igjen.
+- [ ] **ESP32-firmware: beltefilter** (kun belte A, konfigurerbart) +
+  umiddelbar hudkontakt-telemetri. Krever USB-flash. Workaround til da:
+  start B (BT-600) før A (ESP32) ved scratch-oppstart.
+- [ ] **Konsensus-HRV/RMSSD** (slag begge belter ser; ACC/SQI-vekting) -
+  IKKE deriver RR fra den syntetiske strimmelen.
+- [ ] **Plan vektorsløyfe (2D-VCG)** + fusjonsmetode 2/3 (kvalitetsvekting).
+- [ ] **Valider syntesen mot 12-avlednings-referansen** (negativ T V2-V6,
+  PQ 237 ms gjenkjennbart; `docs/private/`, gitignorert).
+- [ ] **frames.device_id = belte-ID** (i dag = kilde) + belteplassering som
+  øktmetadata; må inn før SD-opplastingens dedup.
+- [ ] **SD-spill-opplasting** (venter nytt Sense-kort 113991115) og
+  **v1-migrering** av `recordings/*.jsonl` (3,9 GB).
+- [ ] **Robusthets-finpuss:** auto-rekobling etter full avtak (~1 min heng);
+  auto-pause ved avtak i benkeagenten; EKG y-skala; PSRAM-ringbuffer;
+  UI-WS-melding med ugyldig kontrolltegn (ettergås).
+- [ ] **Dual-H10 felt** (to belter på én ESP32-bro): venter på Sense-kortet.
+- [ ] **Batteri/kapsling**, **hendelsesmarkør** (ACC-tapp MVP),
+  **Kubios-validering**, **Caddy → Traefik** (koordineres med Klasserommet
+  stage-4).
 
 Kjent forbehold: H10 trenger ~5–35 s oppvarming før første EKG/HR-ramme etter
 start (sensoradferd, ikke bug). H10-en fortsetter å måle/drenere til strømmen
@@ -113,6 +84,7 @@ termineres (Polar Issue 2) – derav auto-pause/stopp-logikken. Ekte belte-reset
 | 2026-07-29 | chat 2 → 3 | [2026-07-29-chat-2-til-3.md](./2026-07-29-chat-2-til-3.md) |
 | 2026-08-06 | chat 3 → 4 | [2026-08-06-chat-3-til-4.md](./2026-08-06-chat-3-til-4.md) |
 | 2026-09-21 | chat 4 → 5 | [2026-09-21-chat-4-til-5.md](./2026-09-21-chat-4-til-5.md) |
+| 2026-09-23 | chat 5 → 6 | [2026-09-23-chat-5-til-6.md](./2026-09-23-chat-5-til-6.md) |
 
 Konvensjon: aldri revider et avsluttet datert dokument; hver overgang får et
 nytt, komplett datert dokument, og status/backlog i denne filen oppdateres.
