@@ -57,6 +57,11 @@ UI-finpuss og dual-H10-benkarbeid går først.
   beltets bindingsnøkler → slett BlueZ-bindingen og par på nytt manuelt
   (`bluetoothctl pair` – btleplug har ingen paringsagent); (3) PMD-kontroll
   krever kryptert link, feiler som «Not paired»/«Not connected» uten bond.
+- [ ] **ESP32-firmware: beltefilter** (sett 23.09: broen grep belte B ved
+  scratch-oppstart). Skal kun godta belte A (0B052A39), konfigurerbart.
+  Krever flash over USB. Workaround til da: start B (BT-600) før A (ESP32);
+  dokumentert på TILKOBLING-fanen. Belteregister i UI levert 23.09
+  (`ELDURO_BELTS`: BELTE A/B-merking, A alltid øverst).
 - [ ] **frames.device_id = belte-ID, ikke kilde:** ingest bruker i dag source
   som device_id (rammene på wire mangler belte-id). Må fikses før
   SD-opplastingens dedup (samme belte via to stier skal dedupe på belte).
