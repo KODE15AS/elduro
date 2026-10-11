@@ -34,8 +34,9 @@ laptop (norm «container»).
  har to tjenester, `web` og `caddy`. Caddy er den offentlige ingressen på
  raven og fronter **også studio15/erbium.no og wordpress-kode15**, ikke bare
  elduro.no. Endringer i `Caddyfile` eller caddy-tjenesten påvirker andre
- tjenester i produksjon – vær varsom, og se migreringsplanen Caddy → Traefik
- i [handover/HANDOVER.md](./handover/HANDOVER.md).
+ tjenester i produksjon – vær varsom. Traefik-planen er skrotet; ingressen
+ flyttes i stedet til egen drengr `web-gateway` (plan i
+ `KODE15AS/web-gateway/handover/HANDOVER.md`), og caddy fjernes da herfra.
 - **Unntak fra norm «container» nr. 2 (besluttet av Jørn 20.09.2026):**
  elduros kanoniske arkiv skal ligge i den **delte `mariadb:11.4`-containeren**
  på raven (egen database + egen bruker for elduro), ikke i en egen
