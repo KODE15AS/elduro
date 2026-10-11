@@ -7,7 +7,7 @@ adds a wearable **enduro field unit** (capture while riding, view live on an
 iPhone) and a longitudinal **labelled corpus** for model training.
 
 Runs as a Docker container on **raven**. **Web UI:** https://elduro.no
-(public, HTTPS via Caddy). The Tailscale URL
+(public, HTTPS via felles-ingressen KODE15AS/web-gateway). The Tailscale URL
 (https://cadify104raven.tail14de1b.ts.net:8443) still works on the tailnet.
 
 ## Lenker
@@ -107,8 +107,8 @@ docker compose up -d --build web
 docker build -f Dockerfile.agent --target export -o bin .
 ./bin/elduro-capture --backend ws://127.0.0.1:8094/ws/agent --agent raven
 
-# public HTTPS at elduro.no (Caddy reverse proxy, automatic Let's Encrypt)
-docker compose up -d caddy
+# public HTTPS at elduro.no rutes av felles-ingressen (KODE15AS/web-gateway)
+# via docker-nettet drengr-nett (alias elduro-web) — flyttet 2026-10-11.
 # the Tailscale URL still works on the tailnet:
 tailscale serve --bg --https=8443 http://127.0.0.1:8094
 ```

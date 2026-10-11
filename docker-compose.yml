@@ -28,52 +28,25 @@ services:
       # strimlene som BELTE A/B/C uansett transportvei.
       ELDURO_BELTS: ${ELDURO_BELTS:-}
     networks:
-      - default
+      default:
       # Delt MariaDB-stack (kanonisk arkiv) - se unntak nr. 2 i AGENTS.md.
-      - mariadb-nett
+      mariadb-nett:
+      # web-gateway (felles ingress) når appen via dette nettet som
+      # «elduro-web» — se KODE15AS/web-gateway.
+      drengr-nett:
+        aliases:
+          - elduro-web
     restart: unless-stopped
     labels:
       raven.project: "e-elduro"
 
-  # Public HTTPS front door for elduro.no AND studio15 (erbium.no).
-  # Binds only raven's LAN IP (10.5.0.22) because Tailscale already owns
-  # 100.65.19.39:443. The FortiGate 1:1-NATs 62.92.43.149:80/443 ->
-  # 10.5.0.22, so Let's Encrypt validation and normal traffic both reach
-  # Caddy here. Joined to the external "studio15" network to reach
-  # kontroll-server:3200 (ingress router + on-demand TLS ask endpoint).
-  caddy:
-    image: caddy:2-alpine
-    depends_on:
-      - web
-    ports:
-      - "10.5.0.22:80:80"
-      - "10.5.0.22:443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - /home/cadify/dev/studio15/landing:/srv/studio15-landing:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - default
-      - studio15
-      - wordpress-kode15
-    restart: unless-stopped
-    labels:
-      raven.project: "e-elduro"
-
-volumes:
-  caddy_data:
-  caddy_config:
+  # Felles-ingressen (Caddy) flyttet 2026-10-11 til egen drengr:
+  # KODE15AS/web-gateway. elduro når den via drengr-nett (alias elduro-web).
 
 networks:
   mariadb-nett:
     name: mariadb-nett
     external: true
-  studio15:
-    name: studio15
-    external: true
-  # WordPress for kode15 (repo KODE15AS/wordpress-kode15-no): Caddy naar
-  # containeren wordpress-kode15-no paa dette nettet.
-  wordpress-kode15:
-    name: wordpress-kode15-no_default
+  drengr-nett:
+    name: drengr-nett
     external: true
