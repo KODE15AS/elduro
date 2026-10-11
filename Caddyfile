@@ -32,6 +32,14 @@ studio15.cloud, www.studio15.cloud {
 	reverse_proxy kontroll-server:3200
 }
 
+# kode15.app (kjoept 11.10.2026, forvaltes i KODE15AS/deploi-dns):
+# forelopig en enkel OK-side som beviser DNS + TLS ende-til-ende.
+# .app er HSTS-preloadet, saa alt maa over HTTPS.
+kode15.app, www.kode15.app {
+	encode gzip
+	respond "KODE15: kode15.app er aktivt og ingress paa raven virker." 200
+}
+
 # kode15 midlertidig paa erbium.no (repo KODE15AS/wordpress-kode15-no):
 # rot-domenet gaar rett til WordPress-containeren, www omdirigeres til rot.
 # Byttes til kode15.no naar domenet frigis.
